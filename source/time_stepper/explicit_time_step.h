@@ -7,6 +7,7 @@
 #include <vector>
 #include <utility>
 #include <limits>
+#include "generic_time_step.h"
 #include "detail/all_methods_enum.h"
 #include "detail/butcher_tables.h"
 
@@ -17,21 +18,22 @@ namespace time_steppers
 
 
 template<class VectorOperations, class NonlinearOperator, class Log, class TimeStepAdaptation>
-class explicit_time_step
+class explicit_time_step: public time_steppers::generic_time_step<VectorOperations>
 {
 public:
+    using parent_t = generic_time_step<VectorOperations>;
     using T = typename VectorOperations::scalar_type;
     using T_vec = typename VectorOperations::vector_type;
     using method_type = detail::methods;
-    using table_t = time_steppers::detail::tableu;
+    using table_t = time_steppers::detail::tableu;//typename parent_t::table_type;
 
-    explicit_time_step(VectorOperations* vec_ops_p, TimeStepAdaptation* time_step_adapt_p, Log* log_, NonlinearOperator* nonlin_op_p = nullptr, T param_p = 1.0,  method_type method_p = method_type::RKDP45):
+    explicit_time_step(VectorOperations* vec_ops_p, TimeStepAdaptation* time_step_adapt_p, Log* log_, NonlinearOperator* nonlin_op_p = nullptr, T param_p = 1.0,  const std::string& method_s = "RKDP45"):
     vec_ops_(vec_ops_p), 
     nonlin_op_(nonlin_op_p), 
     time_step_adapt_(time_step_adapt_p),
     log(log_), 
     param_(param_p),
-    method_(method_p)
+    method_(method_s)
     {
         set_table_and_reinit_storage();
         vec_ops_->init_vector(v1_helper_);
@@ -49,11 +51,11 @@ public:
         clear_storage();
     }
     
-    void scheme(method_type method_p)
+    void scheme(const std::string& method_s)
     {
-        if(method_ != method_p)
+        if(method_ != method_s)
         {
-            method_ = method_p;
+            method_ = method_s;
             set_table_and_reinit_storage();
         }
     }
@@ -84,7 +86,7 @@ public:
         time_step_adapt_->pre_execte_step();
     }
 
-    auto get_iteration()const
+    std::size_t get_iteration()const
     {
         return (time_step_adapt_->get_iteration());
     }
@@ -178,7 +180,7 @@ private:
     Log* log;
     detail::butcher_tables table_generator;
     table_t table;
-    method_type method_;
+    std::string method_;
     size_t n_stages_;
 
 
@@ -248,7 +250,7 @@ private:
 
     void set_table_and_reinit_storage()
     {
-        table = table_generator.set_table(method_);
+        table = table_generator.set_table_by_name(method_);
 
         if(time_step_adapt_->is_adaptive()&&!table.is_embedded())
         {

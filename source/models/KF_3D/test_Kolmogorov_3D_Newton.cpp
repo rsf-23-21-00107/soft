@@ -3,13 +3,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <thrust/complex.h>
-#include <utils/cuda_support.h>
+
 #include <external_libraries/cufft_wrap.h>
 #include <external_libraries/cublas_wrap.h>
 
-#include <utils/log.h>
+#include <scfd/utils/log.h>
 #include <numerical_algos/lin_solvers/default_monitor.h>
 #include <numerical_algos/lin_solvers/bicgstabl.h>
+#include <numerical_algos/lin_solvers/gmres.h>
 
 #include <nonlinear_operators/Kolmogorov_flow_3D/Kolmogorov_3D.h>
 #include <nonlinear_operators/Kolmogorov_flow_3D/linear_operator_K_3D.h>
@@ -25,10 +26,8 @@
 #include <common/gpu_file_operations.h>
 #include <common/gpu_vector_operations.h>
 
+#include <scfd/utils/init_cuda.h>
 
-
-#define Blocks_x_ 32
-#define Blocks_y_ 16
 
 
 
@@ -43,38 +42,73 @@ int main(int argc, char const *argv[])
     typedef nonlinear_operators::Kolmogorov_3D<cufft_type, 
             gpu_vector_operations_real_t, 
             gpu_vector_operations_complex_t, 
-            gpu_vector_operations_t,
-            Blocks_x_, Blocks_y_> KF_3D_t;
+            gpu_vector_operations_t> KF_3D_t;
     typedef typename gpu_vector_operations_real_t::vector_type real_vec; 
     typedef typename gpu_vector_operations_complex_t::vector_type complex_vec;
     typedef typename gpu_vector_operations_t::vector_type vec;
+    using vec_file_ops_t = gpu_file_operations<gpu_vector_operations_t>;
 
-    if(argc != 4)
+    if((argc < 15)||(argc > 16))
     {
-        std::cout << argv[0] << " alpha R N:\n 0<alpha<=1, R is the Reynolds number, N = 2^n- discretization in one direction\n";
+        std::cout << argv[0] << " nz alpha R N use_manual_newton pci_id homotopy perturbationY_nx_wavenumber perturbationY_nx_phase perturbationY_ny_wavenumber perturbationY_ny_phase perturbationY_nz_wavenumber perturbationY_nz_phase perturbationY_magnitude control_file(optional):\n nz = {0,1,...} - Z direction wavenumber, 0<alpha<=1, R is the Reynolds number, N = 2^n- discretization in one direction, use_manual_newton(y/n), 0 <= homotopy <= 1, control_file (file path + name)\n";
         return(0);       
     }
     
-    real alpha = std::atof(argv[1]);
-    real Rey = std::atof(argv[2]);
-    size_t N = std::atoi(argv[3]);
+    int nz = std::stoi(argv[1]);
+    real alpha = std::stof(argv[2]);
+    real Rey = std::stof(argv[3]);
+    size_t N = std::stoi(argv[4]);
     int one_over_alpha = int(1/alpha);
+    std::string use_manual_newton(argv[5]);
+    int gpu_pci_id = std::stoi(argv[6]);
+    real homotopy = std::stof(argv[7]);    
+    real pert_nx = std::stof(argv[8]);
+    real pert_phase_x = std::stof(argv[9]);
+    real pert_ny = std::stof(argv[10]);
+    real pert_phase_y = std::stof(argv[11]);
+    real pert_nz = std::stof(argv[12]);
+    real pert_phase_z = std::stof(argv[13]);
+    real pert_magnitude = std::stof(argv[14]);
 
-    init_cuda(-1);
+    std::string file_name;
+    if(argc == 16)
+    {
+        file_name = std::move(std::string(argv[15]));
+    }
+    
     size_t Nx = N*one_over_alpha;
     size_t Ny = N;
     size_t Nz = N;
-    std::cout << "Using alpha = " << alpha << ", Reynolds = " << Rey << ", with discretization: " << Nx << "X" << Ny << "X" << Nz << std::endl;
+    std::cout << "Using: " << "nz = " << nz << ", alpha = " << alpha << ", Reynolds = " << Rey << ", with discretization: " << Nx << "X" << Ny << "X" << Nz << ", using manual Newton first = " << use_manual_newton << ", homotopy = " << homotopy << std::endl;
+    std::cout << "perturbationY_nx_wavenumber = " <<  pert_nx << ", perturbationY_nx_phase = " <<  pert_phase_x  << ", perturbationY_ny_wavenumber = " <<  pert_ny << ", perturbationY_ny_phase = " <<  pert_phase_y << ", perturbationY_nz_wavenumber = " << pert_nz << ", perturbationY_nz_phase = " <<  pert_phase_z  << pert_nz << ", perturbation_Y_magnitude = " << pert_magnitude << std::endl;
+    
+    if(pert_nx + pert_ny + pert_nz == 0)
+    {
+        std::cout << "using random or from file initial vector " << std::endl;
+    }
+    else
+    {
+        std::cout << "using exact solution with perturbation " << std::endl;
+    }
+
+    if(!file_name.empty())
+    {
+        std::cout << "using data from file: " << file_name << std::endl;
+    }
+
+    // init_cuda(-1);
+    scfd::utils::init_cuda(gpu_pci_id); //-1
+    // scfd::utils::init_cuda_persistent(3000);
 
     //linsolver control
     unsigned int lin_solver_max_it = 1000;
-    real lin_solver_tol = 5.0e-3;
+    real lin_solver_tol = 1.0e-3;
     unsigned int use_precond_resid = 1;
     unsigned int resid_recalc_freq = 1;
     unsigned int basis_sz = 3;
     //newton deflation control
     unsigned int newton_def_max_it = 250;
-    real newton_def_tol = 1.0e-10;
+    real newton_def_tol = 5.0e-9;
 
 
 
@@ -87,36 +121,49 @@ int main(int argc, char const *argv[])
     gpu_vector_operations_complex_t *vec_ops_C = new gpu_vector_operations_complex_t(Nx*Ny*Mz, CUBLAS);
     gpu_vector_operations_t *vec_ops = new gpu_vector_operations_t(3*(Nx*Ny*Mz-1), CUBLAS);
     
-    KF_3D_t *KF_3D = new KF_3D_t(alpha, Nx, Ny, Nz, vec_ops_R, vec_ops_C, vec_ops, CUFFT_C2R);
+    KF_3D_t *KF_3D = new KF_3D_t(alpha, Nx, Ny, Nz, vec_ops_R, vec_ops_C, vec_ops, CUFFT_C2R, true, nz);
     // linear solver config
-    typedef utils::log_std log_t;
+    typedef scfd::utils::log_std log_t;
     typedef numerical_algos::lin_solvers::default_monitor<
         gpu_vector_operations_t,log_t> monitor_t;
     typedef nonlinear_operators::linear_operator_K_3D<
         gpu_vector_operations_t, KF_3D_t> lin_op_t;
     typedef nonlinear_operators::preconditioner_K_3D<
         gpu_vector_operations_t, KF_3D_t, lin_op_t> prec_t;    
-    typedef numerical_algos::lin_solvers::bicgstabl<
-        lin_op_t,prec_t,gpu_vector_operations_t,monitor_t,log_t> lin_solver_t;
+    using lin_solver_t = numerical_algos::lin_solvers::gmres<lin_op_t,prec_t,gpu_vector_operations_t,monitor_t,log_t>;
+    // using lin_solver_t = numerical_algos::lin_solvers::bicgstabl<lin_op_t,prec_t,gpu_vector_operations_t,monitor_t,log_t>;
 
     monitor_t *mon;
 
+    KF_3D->set_homotopy_value(homotopy);
     log_t log;
     log_t log3;
-    log3.set_verbosity(1);
+    log3.set_verbosity(0);
     lin_op_t lin_op(KF_3D);
     prec_t prec(KF_3D);    
 
-    lin_solver_t lin_solver(vec_ops, &log3);
-    lin_solver.set_preconditioner(&prec);
 
-    lin_solver.set_use_precond_resid(use_precond_resid);
-    lin_solver.set_resid_recalc_freq(resid_recalc_freq);
-    lin_solver.set_basis_size(basis_sz);
+    //gmres native interface:
+    lin_solver_t::params params;
+    params.basis_size = 500;
+    params.preconditioner_side = 'L';
+    params.reorthogonalization = true;
+    lin_solver_t lin_solver(vec_ops, &log3, params);
+    
+    //bcgstabl:
+    // lin_solver_t lin_solver(vec_ops, &log3);
+    // lin_solver.set_use_precond_resid(use_precond_resid);
+    // lin_solver.set_resid_recalc_freq(resid_recalc_freq);
+    // lin_solver.set_basis_size(basis_sz);
+    //for all:
+    lin_solver.set_preconditioner(&prec);
     mon = &lin_solver.monitor();
-    mon->init(lin_solver_tol, real(0.f), lin_solver_max_it);
+    mon->init(lin_solver_tol, 0, lin_solver_max_it);
     mon->set_save_convergence_history(true);
     mon->set_divide_out_norms_by_rel_base(true);   
+
+
+
 
 
     vec x0, x1, dx, x_back, b;
@@ -126,80 +173,109 @@ int main(int argc, char const *argv[])
     vec_ops->init_vector(x1); vec_ops->start_use_vector(x1);
     vec_ops->init_vector(dx); vec_ops->start_use_vector(dx);
     vec_ops->init_vector(x_back); vec_ops->start_use_vector(x_back);
-    
+    vec_file_ops_t file_ops(vec_ops);
 
-    
-    KF_3D->randomize_vector(x0);
+    if(file_name.empty())
+    {
+        KF_3D->randomize_vector(x0);
+    }
+    else
+    {
+        file_ops.read_vector(file_name, x0);
+    }
+
+    if(pert_nx + pert_ny + pert_nz > 0)
+    {
+        real factor = (Rey-pert_magnitude)/Rey;
+        printf("factor = %f\n", factor);
+        KF_3D->exact_solution(Rey, x0, factor);
+        printf("exact solution norm = %le, div = %le\n", vec_ops->norm(x0), KF_3D->div_norm(x0));
+        vec_ops->assign_scalar(0, x1);
+        KF_3D->sinus_perturbation_x(pert_magnitude, pert_nx, pert_phase_x, pert_magnitude, pert_ny, pert_phase_y, pert_magnitude, pert_nz, pert_phase_z, x1);
+        // vec_ops->add_mul(1.0, x1, x0);
+        vec_ops->mul_pointwise(x0, 1.0, x1);
+        KF_3D->write_solution_abs("x_0.pos", x0);
+    }
+
+
     vec_ops->assign(x0, x_back);
     printf("initial solution norm = %le, div = %le\n", vec_ops->norm(x0), KF_3D->div_norm(x0));
 
-    real solution_norm = 1;
-    unsigned int iter = 0;
-    real mu_min = 0.005;
-    real mu_0 = 1.0;
-    real mu = mu_0;
-    bool ok_flag = true;
-    std::vector<real> newton_norm;
-
-    KF_3D->F(x0, Rey, b);
-    solution_norm = vec_ops->norm(b);
-    newton_norm.push_back(solution_norm);
-    
-    FILE *stream;
-    stream=fopen("newton_convergence.dat", "w" );
-    fprintf(stream, "%le\n", solution_norm );
-    while((solution_norm > newton_def_tol)&&(iter < newton_def_max_it)&&(ok_flag))
+    if(use_manual_newton == "y")
     {
-        vec_ops->assign_scalar(0.0, dx);
+        real solution_norm = 1;
+        unsigned int iter = 0;
+        real mu_min = 1.0e-6;
+        real mu_0 = 1.0;
+        real mu = mu_0;
+            bool ok_flag = true;
+
+        std::vector<real> newton_norm;
+
         KF_3D->F(x0, Rey, b);
-        real solution_norm0 = vec_ops->norm_l2(b);
-        vec_ops->add_mul_scalar(0.0, -1.0, b); // b:=-F(x0)
-        KF_3D->set_linearization_point(x0, Rey);
-        bool res_flag_ = lin_solver.solve(lin_op, b, dx);
-
-        real norm_ratio = 10;
-        mu = mu_0;
-        
-        while(norm_ratio>2.0)
-        {
-            vec_ops->assign_mul(1.0, x0, mu, dx, x1);
-            KF_3D->F(x1, Rey, b);
-            solution_norm = vec_ops->norm_l2(b);
-            norm_ratio = solution_norm/solution_norm0;
-            printf("mu = %le\n", mu);
-            if(mu<mu_0)
-                std::cin.get();             
-
-            mu*=0.5;
-            if(mu<mu_min)
-            {
-                ok_flag = false;
-                break;
-            }
-
-
-        }
-        vec_ops->assign(x1,x0);
-
-        iter++;
-
-        printf("linearization solution norm = %le, div = %le\n", vec_ops->norm(x0), KF_3D->div_norm(x0));
-        printf("update norm = %le, div = %le\n", vec_ops->norm(dx), KF_3D->div_norm(dx));
-        printf("RHS solution norm = %le->%le, div = %le\n", solution_norm0, solution_norm , KF_3D->div_norm(b));
-
-
+        solution_norm = vec_ops->norm(b);
         newton_norm.push_back(solution_norm);
+        
+        FILE *stream;
+        stream=fopen("newton_convergence.dat", "w" );
         fprintf(stream, "%le\n", solution_norm );
-        fflush(stream);
-    }
-    if(!ok_flag)
-    {
-        printf("Failed to converge!\n");
-    }
-    fclose(stream);
+        while((solution_norm > newton_def_tol)&&(iter < newton_def_max_it)&&(ok_flag))
+        {
+            vec_ops->assign_scalar(0.0, dx);
+            KF_3D->F(x0, Rey, b);
+            real solution_norm0 = vec_ops->norm_l2(b);
+            vec_ops->add_mul_scalar(0.0, -1.0, b); // b:=-F(x0)
+            KF_3D->set_linearization_point(x0, Rey);
+            bool res_flag_ = lin_solver.solve(lin_op, b, dx);
 
-    printf("returned solution norm = %le, div = %le\n", vec_ops->norm(x0), KF_3D->div_norm(x0));
-    KF_3D->write_solution_abs("x_1.pos", x0);
+            real norm_ratio = 10;
+            mu = mu_0;
+            
+            while(norm_ratio>1.0)
+            {
+                vec_ops->assign_mul(1.0, x0, mu, dx, x1);
+                KF_3D->F(x1, Rey, b);
+                solution_norm = vec_ops->norm_l2(b);
+                norm_ratio = solution_norm/solution_norm0;
+                printf("mu = %le\n", mu);
+                // if(mu<mu_0)
+                    // std::cin.get();             
+
+                mu*=0.5;
+                if(mu<mu_min)
+                {
+                    ok_flag = false;
+                    break;
+                }
+
+
+            }
+            vec_ops->assign(x1,x0);
+
+            iter++;
+
+            printf("linearization solution norm = %le, div = %le\n", vec_ops->norm(x0), KF_3D->div_norm(x0));
+            printf("update norm = %le, div = %le\n", vec_ops->norm(dx), KF_3D->div_norm(dx));
+            printf("RHS solution norm = %le->%le, div = %le\n", solution_norm0, solution_norm , KF_3D->div_norm(b));
+
+
+            newton_norm.push_back(solution_norm);
+            fprintf(stream, "%le\n", solution_norm );
+            fflush(stream);
+        }
+        if(!ok_flag)
+        {
+            printf("Failed to converge!\n");
+        }
+        fclose(stream);
+
+        printf("returned solution norm = %le, div = %le\n", vec_ops->norm(x0), KF_3D->div_norm(x0));
+        
+        KF_3D->write_solution_abs("x_1.pos", x0);
+        
+        file_ops.write_vector("x_1.dat", x0);
+
+    }
 
 
     // testing newton with convergence strategy
@@ -247,7 +323,7 @@ int main(int argc, char const *argv[])
     }
     printf("Newton 2 solution norm = %le, div = %le\n", vec_ops->norm(x0), KF_3D->div_norm(x0));
     KF_3D->write_solution_abs("x_2.pos", x0);
-    
+    file_ops.write_vector("x_2.dat", x0);
     
 
     vec_ops->stop_use_vector(b); vec_ops->free_vector(b);

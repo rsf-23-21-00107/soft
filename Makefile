@@ -12,7 +12,6 @@ endif
 -include $(CONFIG_FILE)
 
 
-CPPSTD = c++14
 NVCC = $(CUDA_ROOT_PATH)/bin/nvcc
 NVCC_CHECK_REGS = -Xptxas -v 
 NVCCFLAGS = -Wno-deprecated-gpu-targets $(CUDA_ARCH) -std=$(CPPSTD) $(TARGET_NVCC)
@@ -29,16 +28,24 @@ IBOOST = -I$(BOOST_ROOT_PATH)/include
 
 LCUDA = -L$(CUDA_ROOT_PATH)/lib64
 LBOOST = -L$(BOOST_ROOT_PATH)/lib
-LIBS1 = -lcublas -lcurand 
-LIBS2 = -lcufft $(LIBS1)
-LIBS3 = -lcusolver $(LIBS1)
-LIBSAll = -lcublas -lcurand -lcufft -lcusolver
+LIBS1 = $(LCUDA) -lcublas -lcurand 
+LIBS2 = $(LCUDA) -lcufft $(LIBS1)
+LIBS3 = $(LCUDA) -lcusolver $(LIBS2)
+LIBSAll = $(LCUDA) -lcublas -lcurand -lcufft -lcusolver
 LIBBOOST = -lboost_serialization
 LLAPACK = -L$(OPENBLAS_ROOT_PATH)/lib -lopenblas
 
+#clean
+clean:
+	rm *.bin O/*.o
+
 #component tests
-test_cpu_vector_operations.bin:
+test_cpu_vector_operations.bin: test_cpu_vector_operations.cpp
 	$(G++) $(G++FLAGS) $(SCALAR_TYPE) $(IPROJECT) $(ICUDA) source/common/tests/test_cpu_vector_operations.cpp $(OPENMP) -o test_cpu_vector_operations.bin 2>results.make
+
+test_multivector.bin: source/common/tests/test_multivector.cpp
+	$(G++) $(G++FLAGS) $(SCALAR_TYPE) $(IPROJECT) $(ICUDA) source/common/tests/test_multivector.cpp $(OPENMP) -o test_multivector.bin 2>results.make
+
 
 test_cpu_glued_vector_operations.bin:
 	$(G++) $(G++FLAGS) $(SCALAR_TYPE) $(IPROJECT) $(ICUDA) source/common/tests/test_cpu_glued_vector_operations.cpp $(OPENMP) -o test_cpu_glued_vector_operations.bin 2>results.make
@@ -70,6 +77,13 @@ cpu_1st_call_alloc_test.bin: source/numerical_algos/lin_solvers/tests/cpu_1st_ca
 sm_test.bin: source/numerical_algos/lin_solvers/tests/sm_test.cpp
 	$(G++) $(G++FLAGS) $(SCALAR_TYPE) $(IPROJECT) $(ICUDA) source/numerical_algos/lin_solvers/tests/sm_test.cpp -o sm_test.bin 2>results.make $(OPENMP)
 
+iterative_solvers_test.bin: source/numerical_algos/lin_solvers/tests/iterative_solvers_test.cpp
+	$(G++) $(G++FLAGS) $(SCALAR_TYPE) $(IPROJECT) $(ICUDA) source/numerical_algos/lin_solvers/tests/iterative_solvers_test.cpp -o iterative_solvers_test.bin 2>results.make $(OPENMP)
+
+iterative_solvers_test_different_operators.bin: source/numerical_algos/lin_solvers/tests/iterative_solvers_test_different_operators.cpp
+	$(G++) $(G++FLAGS) $(SCALAR_TYPE) $(IPROJECT) $(ICUDA) source/numerical_algos/lin_solvers/tests/iterative_solvers_test_different_operators.cpp -o iterative_solvers_test_different_operators.bin 2>results.make $(OPENMP)
+
+
 exact_linsolver_test.bin: source/numerical_algos/lin_solvers/tests/exact_solver_test.cpp
 	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/numerical_algos/lin_solvers/tests/exact_solver_test.cpp O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o O/gpu_matrix_vector_operations_kernels.o $(LCUDA) $(LIBS3) -o exact_solver_test.bin 2>results.make 
 
@@ -82,8 +96,8 @@ cufft_test.bin: source/models/tests/cufft_test.cpp
 
 cufft_test_2D.bin: source/models/tests/cufft_test_2D.cpp
 	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/tests/cufft_test_kernels.cu -c -o O/cufft_test_kernels.o 2>results.make
-	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/tests/cufft_test_2D.cpp O/cufft_test_kernels.o $(LIBS2) -o cufft_test_2D.bin 2>results.make
-	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/tests/cufft_test_2D_1.cpp O/cufft_test_kernels.o O/gpu_vector_operations_kernels.o $(LIBS2) -o cufft_test_2D_1.bin 2>results.make
+	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/tests/cufft_test_2D.cpp O/cufft_test_kernels.o O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o O/gpu_matrix_vector_operations_kernels.o $(LIBS3) -o cufft_test_2D.bin 2>results.make
+	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/tests/cufft_test_2D_1.cpp O/cufft_test_kernels.o O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o O/gpu_matrix_vector_operations_kernels.o $(LIBS3) -o cufft_test_2D_1.bin 2>results.make
 
 gpu_vector_operations.bin:
 	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/common/gpu_vector_operations_kernels.cu -c -o O/gpu_vector_operations_kernels.o 2>results.make
@@ -98,7 +112,7 @@ gpu_vector_operations_ker:
 gpu_matrix_vector_operations_ker:
 	$(NVCC) $(LIBFLAGS) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT)   source/common/gpu_matrix_vector_operations_kernels.cu -c -o O/gpu_matrix_vector_operations_kernels.o 2>results.make
 gpu_matrix_vector_operations.bin:
-	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/tests/test_matrix_vector_operations.cpp $(LLAPACK) $(LIBS1) O/gpu_vector_operations_kernels.o O/gpu_reduction_ogita_kernels.o O/gpu_matrix_vector_operations_kernels.o -o test_matrix_vector_operations.bin 2>results.make	
+	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/tests/test_matrix_vector_operations.cpp $(LLAPACK) $(LIBS3) O/gpu_vector_operations_kernels.o O/gpu_reduction_ogita_kernels.o O/gpu_matrix_vector_operations_kernels.o -o test_matrix_vector_operations.bin 2>results.make	
 
 
 Kuramoto_Sivashinskiy_2D_ker:
@@ -106,6 +120,9 @@ Kuramoto_Sivashinskiy_2D_ker:
 
 test_Kuramoto_Sivashinskiy_2D_RHS.bin: source/models/KS_2D/test_Kuramoto_Sivashinskiy_2D_RHS.cpp
 	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KS_2D/test_Kuramoto_Sivashinskiy_2D_RHS.cpp O/Kuramoto_Sivashinskiy_2D_ker.o O/gpu_vector_operations_kernels.o O/gpu_reduction_ogita_kernels.o $(LIBS2) -o test_Kuramoto_Sivashinskiy_2D_RHS.bin 2>results.make
+
+test_Kuramoto_Sivashinskiy_2D_Newton.bin: source/models/KS_2D/test_Kuramoto_Sivashinskiy_2D_Newton.cpp
+	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KS_2D/test_Kuramoto_Sivashinskiy_2D_Newton.cpp O/Kuramoto_Sivashinskiy_2D_ker.o O/gpu_vector_operations_kernels.o O/gpu_reduction_ogita_kernels.o $(LIBS2) -o test_Kuramoto_Sivashinskiy_2D_Newton.bin 2>results.make
 
 
 deflation_KS_2D_S: source/models/KS_2D/test_deflation_KS.cpp
@@ -139,6 +156,15 @@ Kolmogorov_3D: source/models/KF_3D/test_Kolmogorov_3D_RHS.cpp
 
 Kolmogorov_3D_all: Kolmogorov_3D_ker Kolmogorov_3D
 
+Taylor_Green_ker: source/nonlinear_operators/Kolmogorov_flow_3D/Kolmogorov_3D_ker.cu
+	$(NVCC) $(LIBFLAGS) $(NVCCFLAGS) $(ICUDA) $(IPROJECT)   source/nonlinear_operators/Taylor_Green/Taylor_Green_ker.cu -c -o O/Taylor_Green_ker.o 2>results.make
+
+Taylor_Green: source/models/Taylor_Green/test_Taylor_Green_RHS.cpp
+	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/Taylor_Green/test_Taylor_Green_RHS.cpp O/Taylor_Green_ker.o O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o $(LIBS2) -o test_Taylor_Green_RHS.bin 2>results.make
+
+Taylor_Green_all: Taylor_Green_ker Taylor_Green
+
+
 newton_Kolmogorov_3D: source/models/KF_3D/test_Kolmogorov_3D_Newton.cpp
 	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KF_3D/test_Kolmogorov_3D_Newton.cpp O/Kolmogorov_3D_ker.o O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o $(LIBS2) -o newton_Kolmogorov_3D.bin 2>results.make
 
@@ -146,11 +172,17 @@ stability_newton_Kolmogorov_3D: source/models/KF_3D/test_Kolmogorov_3D_Newton_st
 	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KF_3D/test_Kolmogorov_3D_Newton_stability.cpp O/Kolmogorov_3D_ker.o O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o O/gpu_matrix_vector_operations_kernels.o $(LLAPACK) $(LIBS2) -o newton_stability_Kolmogorov_3D.bin 2>results.make
 
 file_stability_newton_Kolmogorov_3D: source/models/KF_3D/test_Kolmogorov_3D_Newton_file_stability.cpp
-	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) $(IBOOST) source/models/KF_3D/test_Kolmogorov_3D_Newton_file_stability.cpp O/Kolmogorov_3D_ker.o O/gpu_vector_operations_kernels.o O/gpu_reduction_ogita_kernels.o O/gpu_matrix_vector_operations_kernels.o $(LCUDA) $(LBOOST) $(LLAPACK) $(LIBS2) $(LIBBOOST) -o newton_stability_file_Kolmogorov_3D.bin 2>results.make
+	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) $(IBOOST) source/models/KF_3D/test_Kolmogorov_3D_Newton_file_stability.cpp O/Kolmogorov_3D_ker.o O/gpu_vector_operations_kernels.o O/gpu_reduction_ogita_kernels.o O/gpu_matrix_vector_operations_kernels.o $(LCUDA) $(LBOOST) $(LLAPACK) $(LIBSAll) $(LIBBOOST) -o newton_stability_file_Kolmogorov_3D.bin 2>results.make
 
 
 deflation_Kolmogorov_3D: source/models/KF_3D/test_deflation_Kolmogorov_3D.cpp
 	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KF_3D/test_deflation_Kolmogorov_3D.cpp O/Kolmogorov_3D_ker.o O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o  $(LIBS2) -o deflation_Kolmogorov_3D.bin 2>results.make
+
+compare_soluitons_files: source/models/KF_3D/compare_solutons_files.cpp
+	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KF_3D/compare_solutons_files.cpp O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o O/Kolmogorov_3D_ker.o  $(LIBS2) -o compare_solutions_files.bin 2>results.make
+
+deflation_translation_Kolmogorov_3D: source/models/KF_3D/test_deflation_translation_Kolmogorov_3D.cpp
+	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KF_3D/test_deflation_translation_Kolmogorov_3D.cpp O/Kolmogorov_3D_ker.o O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o  $(LIBS2) -o deflation_translation_Kolmogorov_3D.bin 2>results.make
 
 KF3D_bd: source/models/KF_3D/KF3D_bd_json.cpp
 	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IBOOST) $(IPROJECT) source/models/KF_3D/KF3D_bd_json.cpp O/Kolmogorov_3D_ker.o O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o O/gpu_matrix_vector_operations_kernels.o $(LCUDA) $(LBOOST) $(LIBBOOST) $(LIBS2) $(LLAPACK) -o KF3D_bd_json.bin 2>results.make	
@@ -173,6 +205,9 @@ KF2D_bd: source/models/KF_2D/KF2D_bd.cpp
 KF3D_view: source/models/KF_3D/view_solution.cpp
 	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KF_3D/view_solution.cpp O/Kolmogorov_3D_ker.o O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o $(LCUDA) $(LIBS2) -o KF3D_view_solution.bin 2>results.make
 
+KF3D_view_translation: source/models/KF_3D/view_solution_translation.cpp
+	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KF_3D/view_solution_translation.cpp O/Kolmogorov_3D_ker.o O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o $(LCUDA) $(LIBS2) -o KF3D_view_solution_translation.bin 2>results.make
+
 KS2D_view: source/models/KS_2D/view_solution.cpp
 	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KS_2D/view_solution.cpp O/Kuramoto_Sivashinskiy_2D_ker.o O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o $(LCUDA) $(LIBS2) -o KS2D_view_solution.bin 2>results.make
 
@@ -183,7 +218,20 @@ KF3D_1_bd: source/models/KF_3D/KF3D_1_bd.cpp
 	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) $(LBOOST) source/models/KF_3D/KF3D_1_bd.cpp O/Kolmogorov_3D_ker.o O/gpu_vector_operations_kernels.o  $(LCUDA)  $(LIBS2) $(LIBBOOST) -o KF3D_1_bd.bin 2>results.make	
 
 test_Kolmogorov_3D_continuation_file: source/models/KF_3D/test_Kolmogorov_3D_continuation_file.cpp
-	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KF_3D/test_Kolmogorov_3D_continuation_file.cpp O/Kolmogorov_3D_ker.o O/gpu_vector_operations_kernels.o O/gpu_reduction_ogita_kernels.o $(LIBS2) -o test_Kolmogorov_3D_continuation_file.bin 2>results.make	
+	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KF_3D/test_Kolmogorov_3D_continuation_file.cpp O/Kolmogorov_3D_ker.o O/gpu_vector_operations_kernels.o O/gpu_reduction_ogita_kernels.o $(LIBSAll) -o test_Kolmogorov_3D_continuation_file.bin 2>results.make
+
+Kolmogorov_3D_time_stepping: source/models/KF_3D/Kolmogorov_3D_continuation_time_stepping.cpp
+	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KF_3D/Kolmogorov_3D_continuation_time_stepping.cpp O/Kolmogorov_3D_ker.o O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o $(LIBS2) -o Kolmogorov_3D_time_stepping.bin 2>results.make
+
+Kolmogorov_3D_perodic_orbit_stabilization: source/models/KF_3D/Kolmogorov_3D_perioidc_orbit_stabilization.cpp
+	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KF_3D/Kolmogorov_3D_perioidc_orbit_stabilization.cpp O/Kolmogorov_3D_ker.o O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o O/gpu_matrix_vector_operations_kernels.o $(LIBS3) $(LLAPACK) -o Kolmogorov_3D_perodic_orbit_stabilization.bin 2>results.make
+
+test_Kolmogorov_3D_stiff_solve: source/models/KF_3D/test_Kolmogorov_3D_stiff_solve.cpp
+	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KF_3D/test_Kolmogorov_3D_stiff_solve.cpp O/Kolmogorov_3D_ker.o O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o O/gpu_matrix_vector_operations_kernels.o $(LIBS3) $(LLAPACK) -o test_Kolmogorov_3D_stiff_solve.bin 2>results.make
+
+Kolmogorov_3D_lyapunov_exponents: source/models/KF_3D/Kolmogorov_3D_lyapunov_exponents.cpp
+	$(NVCC) $(NVCCFLAGS) $(SCALAR_TYPE) $(ICUDA) $(IPROJECT) source/models/KF_3D/Kolmogorov_3D_lyapunov_exponents.cpp O/Kolmogorov_3D_ker.o O/gpu_reduction_ogita_kernels.o O/gpu_vector_operations_kernels.o $(LIBS2) -o Kolmogorov_3D_lyapunov_exponents.bin 2>results.make
+
 
 # abc_flow
 abc_flow_ker: source/nonlinear_operators/abc_flow/abc_flow_ker.cu
@@ -293,5 +341,5 @@ test_rossler_periodic_orbit_gpu:
 
 # make all common kernels
 ker:
-	make gpu_matrix_vector_operations_ker gpu_vector_operations_ker gpu_reduction_ogita_ker abc_flow_ker
+	make gpu_matrix_vector_operations_ker gpu_vector_operations_ker gpu_reduction_ogita_ker abc_flow_ker Kolmogorov_3D_ker Taylor_Green_ker
 

@@ -80,7 +80,7 @@ struct prec_operator
         vec_ops_->free_vector(b_);
     }
 
-    void set_operator(const LinearOperator *op_p)
+    void set_operator(const LinearOperator *op_p)const
     {
         op_ = op_p;
     }
@@ -100,7 +100,7 @@ struct prec_operator
 
 private:
     vector_type b_;
-    const LinearOperator *op_;
+    mutable const LinearOperator *op_;
     vector_operations_type* vec_ops_;
     cusolver_wrap* cusolver_;
     size_t N_;
@@ -111,11 +111,11 @@ private:
 int main(int argc, char **args)
 {
 
-    if(argc != 2)
-    {
-        std::cout << "USAGE: " << std::string(args[0]) << " <use_small_alpha_optimization>"  << std::endl;
-        return 0;        
-    }
+    // if(argc != 2)
+    // {
+    //     std::cout << "USAGE: " << std::string(args[0]) << " <use_small_alpha_optimization>(0/1)"  << std::endl;
+    //     return 0;        
+    // }
 
     using real = SCALAR_TYPE;
 
@@ -135,7 +135,7 @@ int main(int argc, char **args)
     using linsolver_t = numerical_algos::lin_solvers::exact_wrapper<lin_op_t, prec_t, vec_ops_t, monitor_t, log_t>;
     using sm_linsolver_t = numerical_algos::sherman_morrison_linear_system::sherman_morrison_linear_system_solve<lin_op_t, prec_t, vec_ops_t, monitor_t, log_t, numerical_algos::lin_solvers::exact_wrapper >;
 
-    bool use_small_alpha = static_cast<bool>(std::stoi(args[1]));
+    // bool use_small_alpha = static_cast<bool>(std::stoi(args[1]));
     real rel_tol = 1.0e-10;
     size_t max_iters = 2;
 
@@ -143,9 +143,10 @@ int main(int argc, char **args)
     cublas_wrap cublas(true);
     cusolver_wrap cusolver(&cublas);
 
-    size_t sz = file_operations::read_matrix_size("./dat_files/A.dat");
+    size_t sz = file_operations::read_matrix_size_square("./dat_files/A.dat");
+    std::cout << "matrix size is " << sz << "X" << sz << std::endl;
     T_mat A;
-    T_vec x, x0, b, c, d, r;
+    T_vec x, x0, x0_sm, b, c, d, r;
     vec_ops_t vec_ops( sz, &cublas );
     mat_ops_t mat_ops( sz, sz, vec_ops.get_cublas_ref() );
     vec_files_ops_t vec_files_ops(&vec_ops);
@@ -153,19 +154,25 @@ int main(int argc, char **args)
 
     mat_ops.init_matrix(A); 
     mat_ops.start_use_matrix(A);
-    vec_ops.init_vectors(x0, x, c, d, b, r);
-    vec_ops.start_use_vectors(x0, x, c, d, b, r);
+    vec_ops.init_vectors(x0,x0_sm, x, c, d, b, r);
+    vec_ops.start_use_vectors(x0, x0_sm, x, c, d, b, r);
 
     real alpha=1.0e-9;
     real beta=1.9;
+    real gamma = 1.2e3;
     real v=0.0;
+    bool use_small_alpha = false;
+    if(alpha<1.0e-8)
+    {
+        use_small_alpha = true;
+    }
 
     mat_files_ops.read_matrix("./dat_files/A.dat", A);
-        
     vec_files_ops.read_vector("./dat_files/x0.dat", x0);
     vec_files_ops.read_vector("./dat_files/b.dat", b);
     vec_files_ops.read_vector("./dat_files/c.dat", c);
     vec_files_ops.read_vector("./dat_files/d.dat", d);
+    vec_files_ops.read_vector("./dat_files/x0_sm.dat", x0_sm);    
 
     std::cout << "matrix size = " << sz << std::endl;
 
@@ -224,12 +231,11 @@ int main(int argc, char **args)
     vec_files_ops.write_vector("./dat_files/x_rank1_exact.dat", x);
     std::cout << "v = " << v << std::endl;
 
-    // vec_ops.add_mul(1.0, x0, -1.0, x);
-    // std::cout << "||x-x0|| = " << vec_ops.norm(x);
-
+    vec_ops.add_mul(1.0, x0, -1.0, x);
+    std::cout << "||x-x0||/||x|| = " << vec_ops.norm_l2(x)/vec_ops.norm_l2(x0);
     //test (beta A - 1/alpha d c^T) u = b;
-    std::cout << "\n ========= \ntesting: (beta A - 1/alpha d c^T) u = b \n";
-    res_flag = sm_linsolver.solve(beta, Ax, alpha, c, d, b, x);
+    std::cout << "\n ========= \ntesting: (gamma A - 1/alpha d c^T) u = b \n";
+    res_flag = sm_linsolver.solve(gamma, Ax, alpha, c, d, b, x);
     
     iters_performed = mon->iters_performed();
 
@@ -238,8 +244,8 @@ int main(int argc, char **args)
     else
         log.error("lin_solver returned fail result");    
     
-    // vec_ops.add_mul(1.0, x0, -1.0, x);
-    // std::cout << "||x-x0|| = " << vec_ops.norm(x);
+    vec_ops.add_mul(1.0, x0_sm, -1.0, x);
+    std::cout << "||x-x0||/||x|| = " << vec_ops.norm_l2(x)/vec_ops.norm_l2(x0_sm);
 
     vec_files_ops.write_vector("./dat_files/x_sm_exact.dat", x);
 
@@ -258,8 +264,11 @@ int main(int argc, char **args)
     
     mat_ops.stop_use_matrix(A);
     mat_ops.free_matrix(A); 
-    vec_ops.stop_use_vectors(x0, x, c, d, b, r);
-    vec_ops.free_vectors(x0, x, c, d, b, r);
+    vec_ops.stop_use_vectors(x0, x0_sm, x, c, d, b, r);
+    vec_ops.free_vectors(x0,x0_sm, x, c, d, b, r);
 
-    return 0;
+    if(res_flag)
+        return 0;
+    else
+        return 1;
 }

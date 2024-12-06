@@ -51,7 +51,9 @@
 #include <common/vector_wrap.h>
 #include <common/vector_pool.h>
 
-
+#include <tuple>
+#include <limits>
+#include <utility>
 
 namespace nonlinear_operators
 {
@@ -111,7 +113,8 @@ public:
 
 //VecOpsR sized Nx*Ny*Nz;VecOpsC sized Nx*Ny*Mz; VecOps is the main vector operations sized 3*(Nx*Ny*Mz-1)
 template<class FFT_type, class VecOpsR, class VecOpsC, class VecOps,  
-unsigned int BLOCK_SIZE_x = 32, unsigned int BLOCK_SIZE_y = 16>
+unsigned int BLOCK_SIZE_x = BLOCK_SIZE_X, unsigned int BLOCK_SIZE_y = BLOCK_SIZE_Y,
+bool PureImag = true>
 class Kolmogorov_3D
 {
 private:
@@ -141,7 +144,7 @@ private:
 
 
     //calss for low level CUDA kernels
-    typedef Kolmogorov_3D_ker<TR, TR_vec, TC, TC_vec> kern_t;
+    typedef Kolmogorov_3D_ker<TR, TR_vec, TC, TC_vec, PureImag> kern_t;
     
 
 
@@ -149,7 +152,7 @@ private:
 
 private:
     unsigned int BLOCK_SIZE = BLOCK_SIZE_x*BLOCK_SIZE_y;
-
+    bool sin_cos;
     //data all passed to constructor as pointers
     T alpha;
     vec_R_t *vec_ops_R;
@@ -170,31 +173,52 @@ private:
 
     T Lx;
     T Ly;
-    T Lz;    
+    T Lz;
+    T homotopy_;
 
 public:
+    //TODO: fix sincos and n_z_formce magic by using human readable parameters!
     Kolmogorov_3D(T alpha_, size_t Nx_, size_t Ny_, size_t Nz_,
         vec_R_t* vec_ops_R_, 
         vec_C_t* vec_ops_C_, 
         vec_R_t* vec_ops_,
-        FFT_type* FFT_): 
+        FFT_type* FFT_, bool sin_cos_p = true, int n_z_force_p = 0): 
     Nx(Nx_), Ny(Ny_), Nz(Nz_), 
     vec_ops_R(vec_ops_R_), vec_ops_C(vec_ops_C_), vec_ops(vec_ops_),
     FFT(FFT_), 
-    alpha(alpha_)
+    alpha(alpha_),
+    homotopy_(0.0),
+    sin_cos(sin_cos_p),
+    n_y_force(1),
+    n_z_force(n_z_force_p)
     {
-        n_y_force = 1;
-        n_z_force = 1;
-        scale_force = T(1.0);
 
+        scale_force = T(1.0);
         Mz=FFT->get_reduced_size();
-        common_constructor_operation();
-        kern = new kern_t(alpha, Nx, Ny, Nz, Mz, BLOCK_SIZE_x, BLOCK_SIZE_y);
-        init_all_derivatives();
         Lx = (T(1.0)/alpha)*T(2.0)*M_PI;
         Ly = T(2.0)*M_PI;
-        Lz = T(2.0)*M_PI;
+        Lz = T(2.0)*M_PI;        
+        kern = new kern_t(alpha, Nx, Ny, Nz, Mz, BLOCK_SIZE_x, BLOCK_SIZE_y);
         plot = new plot_t(vec_ops_R_, Nx_, Ny_, Nz_, Lx, Ly, Lz);
+        common_constructor_operation();
+        init_all_derivatives();
+        
+
+        std::cout << "Kolmogorov 3D on " << Lx <<"X" << Ly << "X" << Lz << "===> nonlinear problem class self-testing:" << std::endl;
+        for(unsigned int j=0;j<1;j++)
+        {   
+            auto manufactured_norm = manufactured_solution(j);
+            std::cout << "Kolmogorov 3D===> manufactured solution number: " << j <<  ", solution norm = "<< std::scientific << manufactured_norm.first << ", residual norm = " << manufactured_norm.second << std::endl;
+            if( !std::isfinite(manufactured_norm.second) ||(manufactured_norm.second > std::numeric_limits<T>::epsilon()*1000.0 ))
+            {
+                throw std::runtime_error("manufactures solution number: " + std::to_string(j) + " returned bad residual norm!" );
+            }
+            else
+            {
+                std::cout << "Kolmogorov 3D===> OK" << std::endl;
+            }
+        }
+
     }
 
 
@@ -205,6 +229,37 @@ public:
         delete plot;
     }
 
+    //set to use rhs that is pure real
+    //this can only be used by extended solver with PureImag = false
+    void set_non_imag_rhs()
+    {
+        if constexpr(!PureImag)
+        {
+            sin_cos = false;
+        }
+    }
+
+    // homotopy value
+    void set_homotopy_value(const T homotopy)
+    {
+        homotopy_ = homotopy;
+    }
+
+    void F(const T time_p, const T_vec& u, const T Reynolds_, T_vec& v)
+    {
+        //for general call to the time stepper.
+        F(u, Reynolds_, v);
+    }   
+    void F_stiff(const T time_p, const T_vec& u, const T Reynolds_, T_vec& v)
+    {
+        //for general call to the time stepper.
+        F_stiff(u, Reynolds_, v);
+    }  
+    void F_nonstiff(const T time_p, const T_vec& u, const T Reynolds_, T_vec& v)
+    {
+        //for general call to the time stepper.
+        F_nonstiff(u, Reynolds_, v);
+    }           
     //   F(u,alpha)=v
     void F(const T_vec& u, const T Reynolds_, T_vec& v)
     {
@@ -225,15 +280,75 @@ public:
         // vec_ops_C->assign_scalar(0.0,W.x);
         // vec_ops_C->assign_scalar(0.0,W.y);
         // vec_ops_C->assign_scalar(0.0,W.z);
-        B_V_nabla_F(U, U, W); //W:= (U, nabla) U
+        B_V_nabla_curl_F(U, U, W); //W:= (U, nabla) U
         kern->add_mul3(TC(-1.0,0), force.x, force.y, force.z, W.x, W.y, W.z); // force:= W-force
         project(W); // W:=P[W]
         kern->negate3(W.x, W.y, W.z); //W:=-W;
         // U := \nabla^2 U
-        kern->apply_Laplace(TR(1.0/Reynolds_), Laplace, U.x, U.y, U.z);
+        if(homotopy_ > 0.0)
+        {
+            auto homotopy_4 = homotopy_*homotopy_*homotopy_*homotopy_;
+            kern->apply_Laplace_Biharmonic(TR(1.0/Reynolds_), Laplace, homotopy_4, Biharmonic, U.x, U.y, U.z);
+        }
+        else
+        {   
+             kern->apply_Laplace(TR(1.0/Reynolds_), Laplace, U.x, U.y, U.z);
+        }
         // W := W + U
         kern->add_mul3(TC(1.0,0), U.x, U.y, U.z, W.x, W.y, W.z);   
         
+    }
+
+
+    void F_nonstiff(BC_vec& U, const T Reynolds_, BC_vec& W)
+    {
+        project(U);
+        // vec_ops_C->assign_scalar(0.0,W.x);
+        // vec_ops_C->assign_scalar(0.0,W.y);
+        // vec_ops_C->assign_scalar(0.0,W.z);
+        B_V_nabla_curl_F(U, U, W); //W:= (U, nabla) U
+        kern->add_mul3(TC(-1.0,0), force.x, force.y, force.z, W.x, W.y, W.z); // force:= W-force
+        project(W); // W:=P[W]
+        kern->negate3(W.x, W.y, W.z); //W:=-W;       
+    }
+
+
+    void F_nonstiff(const T_vec& u, const T Reynolds_, T_vec& v)
+    {
+        BC_vec* U = pool_BC.take(); //input
+        BC_vec* W = pool_BC.take(); //output        
+
+        V2C(u, *U);
+        F_nonstiff(*U, Reynolds_, *W); 
+        C2V(*W, v);
+
+        pool_BC.release(U);
+        pool_BC.release(W);
+    }
+
+    // inplace!!!
+    void F_stiff(BC_vec& U, const T Reynolds_)
+    {
+        
+        if(homotopy_ > 0.0)
+        {
+            auto homotopy_4 = homotopy_*homotopy_*homotopy_*homotopy_;
+            kern->apply_Laplace_Biharmonic(TR(1.0/Reynolds_), Laplace, homotopy_4, Biharmonic, U.x, U.y, U.z);
+        }
+        else
+        {   
+             kern->apply_Laplace(TR(1.0/Reynolds_), Laplace, U.x, U.y, U.z);
+        }
+    }
+    void F_stiff(const T_vec& u, const T Reynolds_, T_vec& v)
+    {
+        BC_vec* U = pool_BC.take(); //input
+
+        V2C(u, *U);
+        F_stiff(*U, Reynolds_); 
+        C2V(*U, v);
+
+        pool_BC.release(U);   
     }
 
     //sets (u_0, alpha_0) for jacobian linearization
@@ -258,16 +373,24 @@ public:
         // vec_ops_C->assign_scalar(0.0,dW->y);
         // vec_ops_C->assign_scalar(0.0,dW->z);
         project(dU);
-        B_V_nabla_F(U_0, dU, dV); //dV:= (dU, nabla) U_0
-        B_V_nabla_F(dU, U_0,*dW); //dW:= (U_0, nabla) dU
+        B_V_nabla_curl_F(U_0, dU, dV); //dV:= (dU, nabla) U_0
+        B_V_nabla_curl_F(dU, U_0,*dW); //dW:= (U_0, nabla) dU
         kern->add_mul3(TC(1.0,0), dW->x, dW->y, dW->z, dV.x, dV.y, dV.z); // dV:=dV+dW
-
-        kern->negate3(dV.x, dV.y, dV.z); // dV:=-dV
         project(dV); // dV:=P[dV]
+        kern->negate3(dV.x, dV.y, dV.z); // dV:=-dV
+        
         // vec_ops_C->assign_scalar(0.0,dV.x);
         // vec_ops_C->assign_scalar(0.0,dV.y);
         // vec_ops_C->assign_scalar(0.0,dV.z);
-        kern->apply_Laplace(TR(1.0/Reynolds_0), Laplace, dU.x, dU.y, dU.z); // dU:=nu*\nabla^2 dU
+        if(homotopy_ > 0.0)
+        {
+            auto homotopy_4 = homotopy_*homotopy_*homotopy_*homotopy_;
+            kern->apply_Laplace_Biharmonic(TR(1.0/Reynolds_0), Laplace, homotopy_4, Biharmonic, dU.x, dU.y, dU.z);
+        }
+        else
+        {        
+            kern->apply_Laplace(TR(1.0/Reynolds_0), Laplace, dU.x, dU.y, dU.z); // dU:=nu*\nabla^2 dU
+        }
         kern->add_mul3(TC(1.0,0), dU.x, dU.y, dU.z, dV.x, dV.y, dV.z); // dV:=dU+dV
  
         pool_BC.release(dW); 
@@ -281,6 +404,40 @@ public:
         
         V2C(du, *dU);
         jacobian_u(*dU, *dV);
+        C2V(*dV, dv);
+        
+        pool_BC.release(dU);
+        pool_BC.release(dV);
+
+    }
+
+
+    //jacobian of the stiff part of the equaitons
+    void jacobian_stiff_u(BC_vec& dU, BC_vec& dV)
+    {
+        
+        kern->copy3(dU.x, dU.y, dU.z, dV.x, dV.y, dV.z); // dV:=dU
+        if(homotopy_ > 0.0)
+        {
+            auto homotopy_4 = homotopy_*homotopy_*homotopy_*homotopy_;
+            kern->apply_Laplace_Biharmonic(TR(1.0/Reynolds_0), Laplace, homotopy_4, Biharmonic, dV.x, dV.y, dV.z);
+        }
+        else
+        {        
+            kern->apply_Laplace(TR(1.0/Reynolds_0), Laplace, dV.x, dV.y, dV.z); // dU:=nu*\nabla^2 dU
+        }
+
+
+    }
+
+    void jacobian_stiff_u(const T_vec& du, T_vec& dv)
+    {
+
+        BC_vec* dU = pool_BC.take(); //input
+        BC_vec* dV = pool_BC.take(); //output           
+        
+        V2C(du, *dU);
+        jacobian_stiff_u(*dU, *dV);
         C2V(*dV, dv);
         
         pool_BC.release(dU);
@@ -331,11 +488,17 @@ public:
     //preconditioner for the Jacobian dF/du
     void preconditioner_jacobian_u(BC_vec& dR)
     {
-        project(dR);
-        kern->apply_iLaplace3(Laplace, dR.x, dR.y, dR.z, Reynolds_0);
-
-
-        //project(dR);
+        // project(dR);
+        if(homotopy_ > 0.0)
+        {
+            auto homotopy_4 = homotopy_*homotopy_*homotopy_*homotopy_;
+            kern->apply_iLaplace3_Biharmonic3(Laplace, Biharmonic, dR.x, dR.y, dR.z, 1, homotopy_4); //Reynolds_0
+        }
+        else
+        {
+            kern->apply_iLaplace3(Laplace, dR.x, dR.y, dR.z, 1); //Reynolds_0
+        }
+        // project(dR);
     }
     void preconditioner_jacobian_u(T_vec& dr)
     {
@@ -353,9 +516,9 @@ public:
     //preconditioner for the temporal Jacobian a*E + b*dF/du
     void preconditioner_jacobian_temporal_u(BC_vec& dR, T a, T b)
     {
-        project(dR);
-        kern->apply_iLaplace3_plus_E(Laplace, dR.x, dR.y, dR.z, Reynolds_0, a, b);
-        project(dR);
+        // project(dR);
+        kern->apply_iLaplace3_plus_E(Laplace, dR.x, dR.y, dR.z, 1, a, b); //Reynolds_0
+        // project(dR);
 
     }
     void preconditioner_jacobian_temporal_u(T_vec& dr, T a, T b)
@@ -369,9 +532,42 @@ public:
         pool_BC.release(dR);
     }
 
+
+
+    //preconditioner for the stiff temporal Jacobian a*E + b*dF_stiff/du
+    void preconditioner_jacobian_stiff_u(BC_vec& dR, T a, T b)
+    {
+        // project(dR);
+        if(homotopy_ > 0.0)
+        {
+            auto homotopy_4 = homotopy_*homotopy_*homotopy_*homotopy_;
+            kern->apply_iLaplace3_Biharmonic3_plus_E(Laplace, Biharmonic, dR.x, dR.y, dR.z, Reynolds_0, homotopy_4, a, b);
+        }
+        else
+        {
+            kern->apply_iLaplace3_plus_E(Laplace, dR.x, dR.y, dR.z, Reynolds_0, a, b);
+        }
+
+    }
+    void preconditioner_jacobian_stiff_u(T_vec& dr, T a, T b)
+    {
+        // auto bbb = vec_ops->norm_l2(dr);
+        
+        BC_vec* dR = pool_BC.take();
+        
+        V2C(dr, *dR);
+        preconditioner_jacobian_stiff_u(*dR, a, b);
+        C2V(*dR, dr);
+        
+        pool_BC.release(dR);
+        // auto ccc = vec_ops->norm_l2(dr);
+        
+    }
+
+
     //funciton that returns std::vector with different bifurcatoin norms
 
-    void norm_bifurcation_diagram(const T_vec& u_in, std::vector<T>& res)
+    void norm_bifurcation_diagram(const T_vec& u_in, std::vector<T>& res, bool clear_vector = false)
     {
         R_vec* uR0 = pool_R.take();
 
@@ -384,14 +580,25 @@ public:
         T val3 = physical_host[I3(int(Nx/4.0), int(Ny/5.0), int(Nz/5.0))];
         T val4 = physical_host[I3(int(Nx/2.0)-1, int(Ny/2.0)-1, int(Nz/2)-1)];
         T val5 = vec_ops->norm_l2(u_in);
-        
-        res.clear();
-        res.reserve(5);
+        T val6 = norm(u_in);
+        T val7 = vec_ops_R->norm_l2(uR0->x);
+        // val1 = val5;
+        // val2 = val6;
+        // val3 = val7;
+
+        if(clear_vector)
+        {
+            res.clear();
+            res.reserve(7);
+        }
         res.push_back(val1);
         res.push_back(val2);
         res.push_back(val3);
         res.push_back(val4);
         res.push_back(val5);
+        res.push_back(val6);
+        res.push_back(val7);
+
 
         pool_R.release(uR0);
     }
@@ -401,26 +608,52 @@ public:
     void exact_solution_sin_cos(const T& Reynolds, T_vec& u_out)
     {
         BC_vec* UA = pool_BC.take();
-        vec_ops_C->assign_mul(TC(scale_force*Reynolds,0), force.x, UA->x);
-        vec_ops_C->assign_mul(TC(scale_force*Reynolds,0), force.y, UA->y);
-        vec_ops_C->assign_mul(TC(scale_force*Reynolds,0), force.z, UA->z);        
+        vec_ops_C->assign_mul(TC(Reynolds,0)*0.5, force.x, UA->x);
+        vec_ops_C->assign_mul(TC(Reynolds,0)*0.5, force.y, UA->y);
+        vec_ops_C->assign_mul(TC(Reynolds,0)*0.5, force.z, UA->z);        
         C2V(*UA, u_out);
         pool_BC.release(UA);        
     }
+    void exact_solution_sin_sin(const T& Reynolds, T_vec& u_out)
+    {
+        BC_vec* UA = pool_BC.take();
+        vec_ops_C->assign_mul(TC(Reynolds,0)*0.5, force.x, UA->x);
+        vec_ops_C->assign_mul(TC(Reynolds,0)*0.5, force.y, UA->y);
+        vec_ops_C->assign_mul(TC(Reynolds,0)*0.5, force.z, UA->z);        
+        C2V(*UA, u_out);
+        pool_BC.release(UA);        
+    }    
     void exact_solution_sin(const T& Reynolds, T_vec& u_out)
     {
         T n = T(n_y_force);
         BC_vec* UA = pool_BC.take();
-        vec_ops_C->assign_mul(TC(scale_force*Reynolds/(n*n),0), force.x, UA->x);
-        vec_ops_C->assign_mul(TC(scale_force*Reynolds/(n*n),0), force.y, UA->y);
-        vec_ops_C->assign_mul(TC(scale_force*Reynolds/(n*n),0), force.z, UA->z);        
+        vec_ops_C->assign_mul(TC(Reynolds/(n*n),0), force.x, UA->x);
+        vec_ops_C->assign_mul(TC(Reynolds/(n*n),0), force.y, UA->y);
+        vec_ops_C->assign_mul(TC(Reynolds/(n*n),0), force.z, UA->z);        
         C2V(*UA, u_out);
         pool_BC.release(UA);        
     }
 
-    void exact_solution(const T& Reynolds, T_vec& u_out)
+    void exact_solution(const T& Reynolds, T_vec& u_out, T scale = 1.0)
     {       
-        exact_solution_sin(Reynolds, u_out);
+        if(n_z_force>0)
+        {
+            if(sin_cos)
+            {
+                std::cout << "exact_solution_sin_cos" << std::endl;
+                exact_solution_sin_cos(Reynolds*scale, u_out);
+            }
+            else
+            {
+                std::cout << "exact_solution_sin_sin" << std::endl;
+                exact_solution_sin_sin(Reynolds*scale, u_out);
+            }
+        }
+        else
+        {
+            std::cout << "exact_solution_sin" << std::endl;
+            exact_solution_sin(Reynolds*scale, u_out);
+        }
     }
 
 
@@ -549,48 +782,130 @@ public:
     void B_ABC_approx_solution(T_vec u_out)
     {
         BC_vec* UC = pool_BC.take();
-        B_V_nabla_F(forceABC, forceABC, *UC);
+        B_V_nabla_curl_F(forceABC, forceABC, *UC);
         project(*UC);
         C2V(*UC, u_out);
         pool_BC.release(UC);
     } 
+    
+    void sinus_perturbation_x(T magnitude_x, T nx, T phase_x, T magnitude_y, T ny, T phase_y, T magnitude_z, T nz, T phase_z, T_vec& u_out)
+    {
+        BR_vec* UR = pool_BR.take();
+        kern->sinus_perturbation(0, magnitude_x, nx, phase_x, magnitude_y, ny, phase_y, magnitude_z, nz, phase_z, UR->x, UR->y, UR->z);
+        BC_vec* UC = pool_BC.take();
+        fft(*UR, *UC);
+        // project(*UC);
+        C2V(*UC, u_out);
+        pool_BC.release(UC);
+        pool_BR.release(UR);
+    }
 
 
-    void randomize_vector(T_vec u_out, int steps_ = -1)
+    void sinus_perturbation_y(T magnitude_x, T nx, T phase_x, T magnitude_y, T ny, T phase_y, T magnitude_z, T nz, T phase_z, T_vec& u_out)
+    {
+        BR_vec* UR = pool_BR.take();
+        kern->sinus_perturbation(1, magnitude_x, nx, phase_x, magnitude_y, ny, phase_y, magnitude_z, nz, phase_z, UR->x, UR->y, UR->z);
+        BC_vec* UC = pool_BC.take();
+        fft(*UR, *UC);
+        // project(*UC);
+        C2V(*UC, u_out);
+        pool_BC.release(UC);
+        pool_BR.release(UR);
+    }
+
+    void sinus_perturbation_z(T magnitude_x, T nx, T phase_x, T magnitude_y, T ny, T phase_y, T magnitude_z, T nz, T phase_z, T_vec& u_out)
+    {
+        BR_vec* UR = pool_BR.take();
+        kern->sinus_perturbation(2, magnitude_x, nx, phase_x, magnitude_y, ny, phase_y, magnitude_z, nz, phase_z, UR->x, UR->y, UR->z);
+        BC_vec* UC = pool_BC.take();
+        fft(*UR, *UC);
+        // project(*UC);
+        C2V(*UC, u_out);
+        pool_BC.release(UC);
+        pool_BR.release(UR);
+    }
+
+    void randomize_vector(T_vec u_out, int steps_ = -1, bool random = true)
     {
         
-        BC_vec* UC0 = pool_BC.take();
-        BR_vec* UR0 = pool_BR.take();
-
-        vec_ops_R->assign_random( UR0->x );
-        vec_ops_R->assign_random( UR0->y );
-        vec_ops_R->assign_random( UR0->z );
-        
-        //vec_ops_R->assign_scalar(0, UR0->x);
-        // vec_ops_R->assign_scalar(0, UR0->z);
-        int steps = steps_;
-        if(steps_ == -1)
+        if(random)
         {
             std::srand(unsigned(std::time(0))); //init new seed
-            steps = std::rand()%4 + 1;     // random from 1 to 4
+            const int NN = 10;
+            BC_vec* UC0 = pool_BC.take();
+            BR_vec* UR0 = pool_BR.take();
 
+            vec_ops_R->assign_random( UR0->x );
+            vec_ops_R->assign_random( UR0->y );
+            vec_ops_R->assign_random( UR0->z );
+            // vec_ops_R->assign_scalar( 0, UR0->x );
+            // vec_ops_R->assign_scalar(0, UR0->x);
+            // vec_ops_R->assign_scalar(0, UR0->z);
+            // vec_ops_R->add_mul_scalar(0,100.0,UR0->x);
+            // vec_ops_R->add_mul_scalar(0,100.0,UR0->y);
+            // vec_ops_R->add_mul_scalar(0,100.0,UR0->z);
+            int steps = steps_;
+            TR dt = 0.1;
+            if(steps_ == -1)
+            {
+                steps = std::rand()%NN + 10;     // random from 1 to NN
+
+            }
+
+            fft(*UR0, *UC0);
+            if constexpr (PureImag)
+            {
+                imag_vec(*UC0);
+            }
+            for(int st=0;st<steps;st++)
+            {
+                smooth(dt, *UC0);
+            }
+
+            // kern->add_mul3(1.0, forceABC.x, forceABC.y, forceABC.z, UC0->x, UC0->y, UC0->z);        
+            T scale = 0.1;
+            vec_ops_C->add_mul_scalar(0.0, scale, UC0->x);
+            vec_ops_C->add_mul_scalar(0.0, scale, UC0->y);
+            vec_ops_C->add_mul_scalar(0.0, scale, UC0->z);
+            project(*UC0);            
+            C2V(*UC0, u_out);
+            // write_solution_abs("random_vector.pos", u_out);
+
+            pool_BC.release(UC0);
+            pool_BR.release(UR0);     
         }
-
-        fft(*UR0, *UC0);
-        imag_vec(*UC0);
-        project(*UC0);
-        for(int st=0;st<steps;st++)
+        else
         {
-            smooth(TR(0.1), *UC0);
+            // auto exp_func = [](int j, int k, int l, int shiftx, int shifty, int shiftz, T muu)
+            // {
+            //     return exp( -muu*((j-shiftx)*(j-shiftx)+(k-shifty)*(k-shifty))+(l-shiftz)*(l-shiftz) );
+            // };
+            // std::vector<T> uR_in_h(Nx*Ny*Nz,0);
+
+
+            // for(int j=0;j<Nx;j++)
+            // {
+            //     for(int k=0;k<Ny;k++)
+            //     {
+            //         for(int l=0;l<Nz;l++)
+            //         {
+            //             T muu = 0.05;
+            //             uR_in_h[I2(j,k,Ny)] = exp_func(j,k,shift1,muu)-exp_func(j,k,shift2,muu);
+            //         }
+            //     }
+            // }        
+            // host_2_device_cpy(du_x_ext, uR_in_h.data(), Nx*Ny);
+            // fft(du_x_ext, u_helper_out);
+            
+            // C2R(u_helper_out, u_out);
+            // R2C(u_out,u_helper_out);
+
+            // C2R(u_helper_out, u_out);
+            // print_vec("rand_vec.dat", u_out);
+            // std::string file_name = "sooth_file_" + std::to_string(steps) + std::string(".pos");
+            // write_solution(file_name, u_out);            
         }
-
-        project(*UC0);
-        
-        C2V(*UC0, u_out);
-
-        pool_BC.release(UC0);
-        pool_BR.release(UR0);     
-
+        // exit(1);
         // std::cout << "div norm = " << div_norm(u_out);
         // write_solution_vec("vec_i.pos", u_out);
     }
@@ -619,18 +934,74 @@ public:
 
     }
 
-    //projects vector to div free space
     void project(T_vec& u_)
     {
-        BC_vec* UC0 = pool_BC.take();
-        V2C(u_, *UC0);        
-        project(*UC0);
-        C2V(*UC0, u_);
-        pool_BC.release(UC0);          
+        BC_vec* UC1 = pool_BC.take();
+        V2C(u_, *UC1);  
+        project(*UC1);
+        C2V(*UC1, u_);
+        pool_BC.release(UC1);
     }
 
 
+    TR norm(const T_vec& u_in_)
+    {
+        BC_vec* UC1 = pool_BC.take();
+        V2C(u_in_, *UC1);  
+        auto norm_ = norm(*UC1);
+        pool_BC.release(UC1);
+        return norm_;
+    }
 
+
+    //finds sutable harmonics and uses them to translate the solution is such way 
+    //that imaginary part of the selected harminics is zero.
+    void translation_fix(const T_vec& u_in_, T_vec& u_out_)
+    {
+        BC_vec* UC0 = pool_BC.take();
+        BC_vec* UC1 = pool_BC.take();
+        V2C(u_in_, *UC0);  
+        auto res = shift_phases(*UC0);
+        auto varphi_x = std::get<0>(res);
+        auto varphi_y = std::get<1>(res);
+        auto varphi_z = std::get<2>(res);
+        std::cout << "varphi_x = " << varphi_x << " varphi_y = " << varphi_y << " varphi_z = " << varphi_z << std::endl;
+        // varphi_z = 0;
+        // varphi_x = 0;
+        varphi_y = 0;
+        varphi_z = 0;
+        translate_solution(*UC0, varphi_x, varphi_y, varphi_z, *UC1);
+        C2V(*UC1, u_out_);
+        pool_BC.release(UC1);
+        pool_BC.release(UC0);
+    }
+
+
+    //translates the whole vector solution in direction, given by varphi_x, varphi_y, varphi_z
+    //returns x_translate_ vector that is transalted
+    void translate_solution(const T_vec& x_, TR varphi_x, TR varphi_y, TR varphi_z, T_vec& x_translate_)
+    {
+        BC_vec* UC0 = pool_BC.take();
+        BC_vec* UC1 = pool_BC.take();
+        V2C(x_, *UC0);  
+        translate_solution(*UC0, varphi_x, varphi_y, varphi_z, *UC1);
+        C2V(*UC1, x_translate_);
+        pool_BC.release(UC1);
+        pool_BC.release(UC0);
+    }
+
+    //enforces hermitian_symmetry (for real-valued functions in Fourier domain)
+    void hermitian_symmetry(const T_vec& x_, T_vec& x_symm_)
+    {
+        BC_vec* UC0 = pool_BC.take();
+        BC_vec* UC1 = pool_BC.take();
+        V2C(x_, *UC0);  
+        hermitian_symmetry(*UC0, *UC1);
+        C2V(*UC1, x_symm_);
+        pool_BC.release(UC1); 
+        pool_BC.release(UC0);        
+
+    }
 
 private:
     
@@ -642,7 +1013,7 @@ private:
     TC_vec grad_z = nullptr;
     //WARNING ENDS
     TC_vec Laplace = nullptr;
-
+    TC_vec Biharmonic = nullptr;
     //linearized solution point:
     BC_vec U_0;
     T Reynolds_0;
@@ -661,6 +1032,31 @@ private:
     TC_vec mask23;
 
 
+    
+    //tests the method with the some pre-defined manufactured solutions
+    //a particular solution is selected by the prived number
+    //returns a residual norm
+    std::pair<T,T> manufactured_solution(unsigned int solution_number = 0)
+    {
+        T resid_norm = -1.0;
+        T solution_norm = 0.0;
+        if(solution_number == 0)
+        {
+            T Reynolds = 5.0;
+            T_vec u_manufactured, resid;
+            vec_ops->init_vectors(u_manufactured, resid); vec_ops->start_use_vectors(u_manufactured, resid); 
+            exact_solution(Reynolds, u_manufactured);
+            solution_norm = vec_ops->norm_l2(u_manufactured);
+            // write_solution_vec("exact_solution.pos", u_manufactured);
+            F(u_manufactured, Reynolds, resid);
+            // write_solution_vec("residual.pos", resid);
+            resid_norm = vec_ops->norm_l2(resid)/solution_norm;
+            vec_ops->stop_use_vectors(u_manufactured, resid); vec_ops->free_vectors(u_manufactured, resid); 
+        }
+        return {solution_norm, resid_norm};
+    }
+
+
     void common_distructor_operations()
     {
         device_deallocate<TC>(grad_x);
@@ -668,6 +1064,7 @@ private:
         device_deallocate<TC>(grad_z);
 
         vec_ops_C->stop_use_vector(Laplace);  vec_ops_C->free_vector(Laplace); 
+        vec_ops_C->stop_use_vector(Biharmonic);  vec_ops_C->free_vector(Biharmonic); 
         vec_ops_C->stop_use_vector(mask23);  vec_ops_C->free_vector(mask23);         
         force.free();
         forceABC.free();
@@ -691,6 +1088,7 @@ private:
         grad_z = device_allocate<TC>(Mz);
 
         vec_ops_C->init_vector(Laplace);  vec_ops_C->start_use_vector(Laplace); 
+        vec_ops_C->init_vector(Biharmonic);  vec_ops_C->start_use_vector(Biharmonic); 
         vec_ops_C->init_vector(mask23);  vec_ops_C->start_use_vector(mask23);
         force.alloc(vec_ops_C);
         forceABC.alloc(vec_ops_C);
@@ -700,64 +1098,108 @@ private:
         //adjust pool sizes!!!
         pool_R.alloc_all(vec_ops_R, 1);
         pool_C.alloc_all(vec_ops_C, 1);
-        pool_BR.alloc_all(vec_ops_R, 5);
-        pool_BC.alloc_all(vec_ops_C, 6);        
+        pool_BR.alloc_all(vec_ops_R, 7);
+        pool_BC.alloc_all(vec_ops_C, 7);        
 
 
 
     }
 
 
-    //advection operator in classical form as F := ((V, \nabla) F).
+    //advection operator in classical form as ((V, \nabla) F).
     //V, F and ret are block vectors.
     void B_V_nabla_F(const BC_vec& Vel, const BC_vec& Func, BC_vec& ret)
     {
+  
         BC_vec* CdFx = pool_BC.take();
         BC_vec* CdFy = pool_BC.take();
         BC_vec* CdFz = pool_BC.take();
-        
+        BC_vec* Vel_reduced = pool_BC.take();
+        kern->apply_grad3(Func.x, Func.y, Func.z, mask23, grad_x, grad_y, grad_z, CdFx->x, CdFx->y, CdFx->z, CdFy->x, CdFy->y, CdFy->z, CdFz->x, CdFz->y, CdFz->z);
+        kern->copy_mul_poinwise_3(mask23, Vel.x, Vel.y, Vel.z, Vel_reduced->x, Vel_reduced->y, Vel_reduced->z);
         BR_vec* RdFx = pool_BR.take();
         BR_vec* RdFy = pool_BR.take();
         BR_vec* RdFz = pool_BR.take();
         BR_vec* VelR = pool_BR.take();
-
-        kern->apply_grad3(Func.x, Func.y, Func.z, mask23, grad_x, grad_y, grad_z, CdFx->x, CdFx->y, CdFx->z, CdFy->x, CdFy->y, CdFy->z, CdFz->x, CdFz->y, CdFz->z);
-
+        BR_vec* resR = pool_BR.take();  
         ifft(*CdFx, *RdFx);
         ifft(*CdFy, *RdFy);
         ifft(*CdFz, *RdFz);
-        ifft(Vel, *VelR);
-        
+        ifft(*Vel_reduced, *VelR);
         pool_BC.release(CdFx);
         pool_BC.release(CdFy);
         pool_BC.release(CdFz);
-
-        BR_vec* resR = pool_BR.take();
+        pool_BC.release(Vel_reduced);
         kern->multiply_advection(VelR->x, VelR->y, VelR->z, RdFx->x, RdFx->y, RdFx->z, RdFy->x, RdFy->y, RdFy->z, RdFz->x, RdFz->y, RdFz->z, resR->x, resR->y, resR->z);
-
         fft(*resR, ret);
-        imag_vec(ret); //make sure it's pure imag after approximate advection!
-        
+        if constexpr (PureImag)
+        {
+           imag_vec(ret); //make sure it's pure imag after approximate advection!
+        }
         pool_BR.release(resR);
         pool_BR.release(RdFx);
         pool_BR.release(RdFy);
         pool_BR.release(RdFz);
         pool_BR.release(VelR);
-
     }
+
+
+    //advection operator in rotational form as [V \cross curl(F)].
+    //V, F and ret are block vectors.
+    void B_V_nabla_curl_F(const BC_vec& Vel, const BC_vec& Func, BC_vec& ret)
+    {
+  
+        BC_vec* curl = pool_BC.take();
+        BC_vec* Vel_reduced = pool_BC.take();
+        kern->curl(grad_x, grad_y, grad_z, Func.x, Func.y, Func.z, curl->x, curl->y, curl->z, mask23);
+        kern->copy_mul_poinwise_3(mask23, Vel.x, Vel.y, Vel.z, Vel_reduced->x, Vel_reduced->y, Vel_reduced->z);
+        BR_vec* curlR = pool_BR.take();
+        BR_vec* VelR = pool_BR.take();
+        BR_vec* resR = pool_BR.take();  
+        ifft(*curl, *curlR);
+        ifft(*Vel_reduced, *VelR);
+        pool_BC.release(curl);
+        pool_BC.release(Vel_reduced);
+        kern->cross_real(VelR->x, VelR->y, VelR->z, curlR->x, curlR->y, curlR->z, resR->x, resR->y, resR->z);
+        fft(*resR, ret);
+        if constexpr (PureImag)
+        {
+           imag_vec(ret); //make sure it's pure imag after approximate advection!
+        }
+        pool_BR.release(resR);
+        pool_BR.release(curlR);
+        pool_BR.release(VelR);
+    }
+
+
 
     void init_all_derivatives()
     {
         set_gradient_coefficients_low_level();
         set_Laplace_coefficients();
+        set_Biharmonic_coefficients();
         set_force();
         kern->apply_mask(alpha, mask23);
+        // vec_ops_C->assign_scalar(1.0, mask23);
+        // std::vector<TC> mask_h(Nx*Ny*Mz,0);
+        // device_2_host_cpy<TC>(mask_h.data(), mask23, Nx*Ny*Mz);
+        // std::vector<TR> mask_hr;
+        // for(auto &x: mask_h)
+        // {
+        //     mask_hr.push_back( x.real() );
+        // }
+    
+        // plot->write_out_file_pos("mask_v.pos", mask_hr.data(), Nx, Ny, Mz, 1);
+        // exit(1);
     }
 
 
     void smooth(TR tau, BC_vec& U_in_place)
     {
-        kern->apply_smooth(tau, Laplace, U_in_place.x, U_in_place.y, U_in_place.z);
+        BC_vec* UC1 = pool_BC.take();
+        kern->apply_smooth(tau, Laplace, U_in_place.x, U_in_place.y, U_in_place.z, UC1->x, UC1->y, UC1->z);
+        kern->add_mul3(TC(1.0,0), UC1->x, UC1->y, UC1->z, U_in_place.x, U_in_place.y, U_in_place.z); 
+        pool_BC.release(UC1);
     }
 
     void grad(const TC_vec& u_in, BC_vec& U_out)
@@ -772,6 +1214,18 @@ private:
 
     //projects fourier vector to the divergence free space
     void project(BC_vec& U_in_place)
+    {
+        if constexpr(PureImag)
+        {
+            kern->apply_projection(grad_x, grad_y, grad_z, Laplace, U_in_place.x, U_in_place.y, U_in_place.z);
+        }
+        else
+        {
+            kern->apply_full_projection(grad_x, grad_y, grad_z, Laplace, U_in_place.x, U_in_place.y, U_in_place.z);
+        }
+    }
+
+    void project_old(BC_vec& U_in_place)
     {
         
         C_vec* uC0 = pool_C.take();
@@ -831,12 +1285,25 @@ private:
     {
         kern->Laplace_Fourier(grad_x, grad_y, grad_z, Laplace);
     }
+
+    void set_Biharmonic_coefficients()
+    {
+        kern->Biharmonic_Fourier(grad_x, grad_y, grad_z, Biharmonic);
+    }
    
     void set_force()
     {
         //kern->force_Fourier_cos_sin(n_y_force, n_z_force, scale_force, force.x, force.y, force.z);
-        kern->force_Fourier_sin(n_y_force, n_z_force, scale_force, force.x, force.y, force.z);
+        if(sin_cos)
+        {
+            kern->force_Fourier_sin(n_y_force, n_z_force, scale_force, force.x, force.y, force.z);
+        }
+        else
+        {
+            kern->force_Fourier_sin_sin(n_y_force, n_z_force, scale_force, force.x, force.y, force.z);
+        }
         
+
         kern->force_ABC(forceABC_R.x, forceABC_R.y, forceABC_R.z);
 
         fft(forceABC_R, forceABC);
@@ -846,18 +1313,24 @@ private:
 
     void V2C(const T_vec& u_in, BC_vec& U_out)
     {
-        kern->vec2complex(u_in, U_out.x, U_out.y, U_out.z);
+        if constexpr(PureImag)
+            kern->vec2complex_imag(u_in, U_out.x, U_out.y, U_out.z);
+        else
+            kern->vec2complex_full(u_in, U_out.x, U_out.y, U_out.z);
     }
     void C2V(const BC_vec& U_in, T_vec& u_out)
     {
-        kern->complex2vec(U_in.x, U_in.y, U_in.z, u_out);
+        if constexpr(PureImag)
+            kern->complex2vec_imag(U_in.x, U_in.y, U_in.z, u_out);
+        else
+            kern->complex2vec_full(U_in.x, U_in.y, U_in.z, u_out);
     }
 
     TR norm(const BC_vec& U_in)
     {
-        T norm_x = vec_ops->norm_l2(U_in.x);
-        T norm_y = vec_ops->norm_l2(U_in.y);
-        T norm_z = vec_ops->norm_l2(U_in.z);
+        T norm_x = vec_ops_C->norm_l2(U_in.x);
+        T norm_y = vec_ops_C->norm_l2(U_in.y);
+        T norm_z = vec_ops_C->norm_l2(U_in.z);
         return(std::sqrt(norm_x*norm_x+norm_y*norm_y+norm_z*norm_z));
     }
 
@@ -876,17 +1349,45 @@ private:
     }
     void ifft(const TC_vec& u_hat_, TR_vec& u_)
     {
-        FFT->ifft(u_hat_, u_);
+        C_vec* u_hat_tmp = pool_C.take();
+        vec_ops_C->assign(u_hat_, u_hat_tmp->get_ref());
+        FFT->ifft(u_hat_tmp->get_ref(), u_);
+        pool_C.release(u_hat_tmp);
         T scale = T(1.0)/(Nx*Ny*Nz);
         vec_ops_R->scale(scale, u_);
+
     }
     void fft(const TR_vec& u_, TC_vec& u_hat_)
     {
-        FFT->fft(u_, u_hat_);
+        R_vec* u_tmp = pool_R.take();
+        vec_ops_R->assign(u_, u_tmp->get_ref());
+        FFT->fft(u_tmp->get_ref(), u_hat_);
+        pool_R.release(u_tmp);
+    }   
+
+
+    std::tuple<TR,TR,TR> shift_phases(BC_vec& U_in)
+    {
+        auto varphis = kern->get_shift_phases(U_in.x, {true,false,false}); //test
+        return varphis;
+    }
+    
+    void translate_solution(BC_vec& U_in, TR varphi_x, TR varphi_y, TR varphi_z, BC_vec& U_out)
+    {
+
+        kern->apply_translate(U_in.x, grad_x, grad_y, grad_z, varphi_x, varphi_y, varphi_z, U_out.x);
+        kern->apply_translate(U_in.y, grad_x, grad_y, grad_z, varphi_x, varphi_y, varphi_z, U_out.y);
+        kern->apply_translate(U_in.z, grad_x, grad_y, grad_z, varphi_x, varphi_y, varphi_z, U_out.z);
+        hermitian_symmetry(U_out, U_out);
+        
     }
 
-
-    
+    void hermitian_symmetry(BC_vec& U, BC_vec& U_sym)
+    {
+        kern->make_hermitian_symmetric(U.x, U_sym.x);
+        kern->make_hermitian_symmetric(U.y, U_sym.y);
+        kern->make_hermitian_symmetric(U.z, U_sym.z);
+    }
 
 
 };

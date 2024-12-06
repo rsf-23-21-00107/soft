@@ -2,9 +2,12 @@
 #define __TIME_STEPPER_BUTCHER_TABLES_H__
 
 #include <vector>
+#include <cmath>
+#include <map>
 #include <stdexcept>
 #include <limits>
-#include <time_stepper/detail/all_methods_enum.h>
+#include <utility>
+#include "all_methods_enum.h"
 
 
 namespace time_steppers
@@ -193,16 +196,50 @@ private:
         {
             if(n_rows != x.size() )
             {
-                throw std::logic_error("butcher_tables::tableu: provided A matrix is not square for: " + methods_str[method] );
+                throw std::logic_error("butcher_tables::tableu: provided A matrix is not square.");
             }
         }
     }
 
 };
 
+// first explicit, then implicit
+struct composite_tableu: public tableu
+{
+    
+    composite_tableu():tableu(){}
+    composite_tableu(const methods&& method_p, const tableu::mat_t&& A_e, const tableu::mat_t&& A_i, const tableu::vec_t&& b_e, const tableu::vec_t&& b_i, const tableu::vec_t&& c_e = {}, const tableu::vec_t&& c_i = {}, const tableu::vec_t&& b_hat_p_e = {}, const tableu::vec_t&& b_hat_p_i = {}):
+    E{std::move(method_p), std::move(A_e), std::move(b_e), std::move(c_e), std::move(b_hat_p_e)},
+    I{std::move(method_p), std::move(A_i), std::move(b_i), std::move(c_i), std::move(b_hat_p_i)}
+    {
+
+    }
+
+    tableu E, I;
+
+
+};
+
+
 struct butcher_tables
 {
 
+
+    butcher_tables()
+    {
+        tables.emplace("EE",std::move(set_table(EXPLICIT_EULER)));
+        tables.emplace("HE",std::move(set_table(HEUN_EULER)));
+        tables.emplace("RK33SSP",std::move(set_table(RK33SSP)) );
+        tables.emplace("RK43SSP",std::move(set_table(RK43SSP)) ); 
+        tables.emplace("RKDP45",std::move(set_table(RKDP45)) ); 
+        tables.emplace("RK64SSP",std::move(set_table(RK64SSP)) ); 
+        tables.emplace("IE",std::move(set_table(IMPLICIT_EULER)) ); 
+        tables.emplace("IM",std::move(set_table(IMPLICIT_MIDPOINT)) ); 
+        tables.emplace("CN",std::move(set_table(CRANK_NICOLSON)) ); 
+        tables.emplace("SDIRK2A1",std::move(set_table(SDIRK2A1)) ); 
+        tables.emplace("ESDIRK3A2",std::move(set_table(ESDIRK3A2)) ); 
+        tables.emplace("SDIRK3A3",std::move(set_table(SDIRK3A3)) ); 
+    }
     tableu set_table(const methods& method_p) const
     {
         
@@ -234,18 +271,199 @@ struct butcher_tables
                     {0.1210663237182, 0.2308844004550, 0.0853424972752, 0.3450614904457, 0.0305351538213, 0.1871101342844}
                     ));
             break;
+
+        case IMPLICIT_EULER:
+            return std::move(tableu(IMPLICIT_EULER, {{1}},{1},{1} ) );
+            break;
+        case IMPLICIT_MIDPOINT:
+            return std::move(tableu(IMPLICIT_MIDPOINT, {{1.0/2.0}},{1.0},{1.0/2.0} ) );
+            break;
+        case CRANK_NICOLSON:
+            return std::move(tableu(CRANK_NICOLSON, {{0,0},{1.0/2.0,1.0/2.0}},{1.0/2.0,1.0/2.0},{0,1.0} ) );
+            break;
+        case SDIRK2A1:
+            {
+                double gamma = 0.5*(2.0 - std::sqrt(2.0));
+                double b2 = 0.5;
+                return std::move(tableu(SDIRK2A1, {{gamma,0},{1.0-gamma, gamma}},{(1.0-gamma),gamma},{gamma,1.0},{(1.0-b2),b2} ) );
+            }
+            break;            
+        case ESDIRK3A2: //DIRK.pdf, p71
+            {
+                double gamma = 0.5*(2.0 - std::sqrt(2.0));
+                double b2 = (gamma*(-2+7*gamma-5*gamma*gamma+4*gamma*gamma*gamma))/(2*(2*gamma-1));
+                double b3 = (-2*gamma*gamma*(1-gamma+gamma*gamma))/(2*gamma-1);
+                double b1 = 2*gamma;
+                return std::move(tableu(ESDIRK3A2, {{0,0,0},{gamma, gamma,0},{(1-b1-gamma), b1, gamma}},{(1.0-b1-gamma), b1, gamma},{0, 2*gamma, 1},{(1-b2-b3),b2,b3} ) );
+            }
+            break;
+        case SDIRK3A3: //DIRK.pdf, p77
+            {
+                double gamma = 0.43586652150845899941601945;
+                double alpha = 1-4*gamma+2*gamma*gamma;
+                double beta = -1+6*gamma-9*gamma*gamma+3*gamma*gamma*gamma;
+                double b1 = (-1+4*gamma)/(4*beta);
+                double b2 = (-3*alpha*alpha)/(4*beta);
+                double b3 = 0.5;
+                double c2 = (2-9*gamma+6*gamma*gamma)/(3*alpha);
+                return std::move(tableu(SDIRK3A3, {{gamma,0,0},{c2-gamma, gamma,0},{(1-b2-gamma), b2, gamma}},{(1.0-b2-gamma), b2, gamma},{gamma, c2, 1},{(1-b2-b3),b2,b3} ) );
+            }
+            break;
+
         default:
             throw std::logic_error("butcher_tables: unsupported table enum provided.");
-        }
-        
+        }   
     }
+    
+    
+    tableu set_table_by_name(const std::string& name)
+    {
+        auto cc = std::move(tables[name]);
+        if(cc.get_size()==0)
+        {
+            throw std::logic_error("butcher_tables: non-existent table name provided.");
+        }
+        return std::move(cc);
+    }
+
+    std::vector<std::string> get_list_of_table_names() const
+    {
+        std::vector<std::string> names;
+        for(auto &n: tables)
+        {
+            names.push_back(n.first);
+        }
+        return names;
+    }
+
+private:
+    std::map<std::string, tableu> tables;
     
 
 };
 
 
+struct composite_butcher_tables
+{
+
+
+    composite_butcher_tables()
+    {
+        composite_tables.emplace("IMEX_EULER", set_table(IMEX_EULER) );
+        composite_tables.emplace("IMEX_TR2", set_table(IMEX_TR2) );
+        composite_tables.emplace("IMEX_ARS3", set_table(IMEX_ARS3) );
+        composite_tables.emplace("IMEX_AS2", set_table(IMEX_AS2) );
+    }
+
+    std::pair<tableu, tableu> set_table(const methods& method_p) const
+    {
+        switch(method_p)
+        {
+            case IMEX_EULER:
+                {
+                    auto ct = composite_tableu(IMEX_EULER, {{0,0},{1,0}}, {{0,0},{0,1}}, {1, 0},{0, 1},{0, 1},{0, 1});
+                    return std::pair<tableu,tableu>( std::move(ct.E), std::move(ct.I)); 
+                }
+                break;  
+            case IMEX_TR2:
+                {
+                    auto ct = composite_tableu(IMEX_TR2, {{0,0},{1,0}}, {{0,0},{1.0/2.0,1.0/2.0}}, {1.0/2.0, 1.0/2.0},{1.0/2.0, 1.0/2.0},{0, 1},{0, 1});
+                    return std::pair<tableu,tableu>( std::move(ct.E), std::move(ct.I)); 
+                }
+                break; 
+            case IMEX_ARS3:
+                {
+                    double gamma = (3.0+std::sqrt(3.0))/6.0;
+                    auto ct = composite_tableu(IMEX_ARS3, {{0,0,0},{gamma,0,0},{gamma-1,2*(1-gamma),0}}, {{0,0,0},{0,gamma,0},{0, 1-2*gamma, gamma}}, {0, 1.0/2.0, 1.0/2.0},{0, 1.0/2.0, 1.0/2.0},{0, gamma, 1-gamma},{0, gamma, 1-gamma});
+                    return std::pair<tableu,tableu>( std::move(ct.E), std::move(ct.I)); 
+                }
+                break;                                 
+            case IMEX_AS2:
+                {
+                    double omega = (2.0-std::sqrt(2.0))/2.0;
+                    double k = 1 - 1.0/(2.0*omega);
+                    auto ct = composite_tableu(IMEX_AS2, {{0,0,0},{omega,0,0},{k,1-k,0}}, {{0,0,0},{0,omega,0},{0, 1-omega, omega}}, {k, 1-k, 0},{0, 1-omega, omega},{0, omega, 1},{0, omega, 1});
+                    return std::pair<tableu,tableu>( std::move(ct.E), std::move(ct.I)); 
+                }
+                break;  
+            default:
+                  
+                throw std::logic_error("composite_butcher_tables: unsupported table enum provided.");                      
+        }        
+
+
+    }
+
+
+    std::pair<tableu, tableu> set_table_by_name(const std::string& name)
+    {
+        auto cc = std::move(composite_tables[name]);
+        if(cc.first.get_size()==0)
+        {
+            throw std::logic_error("composite_butcher_tables: non-existent table name provided.");
+        }
+        return std::move(cc);
+    }
+
+
+    std::vector<std::string> get_list_of_table_names() const
+    {
+        std::vector<std::string> names;
+        for(auto &n: composite_tables)
+        {
+            names.push_back(n.first);
+        }
+        return names;
+    }
+
+
+private:
+    std::map< std::string, std::pair<tableu, tableu> > composite_tables;
+
+};
 
 }
+
+std::string get_scheme_type_by_name(const std::string& name)
+{
+    detail::butcher_tables bt;
+    detail::composite_butcher_tables ct;  
+    // ERK, SDIRK, DIRK, IRK
+    std::string ret_type = "";
+    bool found = false;
+    using table_type = detail::tableu::type;
+    for(auto &v: bt.get_list_of_table_names() )
+    {
+        if(v == name)
+        {
+            found = true;
+            auto table = bt.set_table_by_name(v);
+            if( table.get_type() == table_type::ERK )
+            {
+                ret_type = "explicit";
+            }
+            else
+            {
+                ret_type = "implicit";
+            }
+            break;
+        }
+    }
+    for( auto &v: ct.get_list_of_table_names() )
+    {
+        if(v == name)
+        {
+            found = true;
+            ret_type = "imex";
+        }
+    }
+    if(!found)
+    {
+        throw std::runtime_error("provided name " + name + " is not found in tables, no such schemes.");
+    }
+    return ret_type;
+}
+
 }
 
 

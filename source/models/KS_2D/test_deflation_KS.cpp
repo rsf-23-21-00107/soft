@@ -10,9 +10,9 @@ int main(int argc, char const *argv[])
 {
     
     init_cuda(-1);
-    size_t Nx=1024;
-    size_t Ny=1024;
-    real norm_wight = real(1);//std::sqrt(real(Nx*Ny));
+    size_t Nx=512;
+    size_t Ny=512;
+    real norm_wight = std::sqrt(real(Nx*Ny));
     real size_problem = real(1);//std::sqrt(real(Nx*Ny));
 
     //linsolver control
@@ -23,12 +23,16 @@ int main(int argc, char const *argv[])
     unsigned int resid_recalc_freq = 1;
     unsigned int basis_sz = 3;
     //newton deflation control
-    unsigned int newton_def_max_it = 350;
-    real newton_def_tol = 5.0e-10;
+    unsigned int newton_def_max_it = 1000;
+    real newton_def_tol = 5.0e-9;
+    real newton_update_weight = 0.5;
+    std::size_t max_failed_attempts = 3;
 
-    real lambda_0 = 7.3;
+    real lambda_0 = 5.0;
     real a_val = 2.0;
     real b_val = 4.0;
+
+
 
     fft_t *CUFFT_C2R = new fft_t(Nx, Ny);
     size_t My=CUFFT_C2R->get_reduced_size();
@@ -69,7 +73,7 @@ int main(int argc, char const *argv[])
     SM->get_linsolver_handle()->set_resid_recalc_freq(resid_recalc_freq);
     SM->get_linsolver_handle()->set_basis_size(basis_sz);
 
-    convergence_newton_def_t *conv_newton_def = new convergence_newton_def_t(vec_ops_R_im, log, newton_def_tol, newton_def_max_it, real(1), true );
+    convergence_newton_def_t *conv_newton_def = new convergence_newton_def_t(vec_ops_R_im, log, newton_def_tol, newton_def_max_it, newton_update_weight, true );
     sol_storage_def_t *sol_storage_def = new sol_storage_def_t(vec_ops_R_im, 50, norm_wight);
     system_operator_def_t *system_operator_def = new system_operator_def_t(vec_ops_R_im, Ax, SM, sol_storage_def);
     newton_def_t *newton_def = new newton_def_t(vec_ops_R_im, system_operator_def, conv_newton_def);
@@ -92,9 +96,9 @@ int main(int argc, char const *argv[])
     vec_ops_R->init_vector(u_out_ph); vec_ops_R->start_use_vector(u_out_ph);
 
 
-    deflation_operator_t *deflation_op = new deflation_operator_t(vec_ops_R_im, log, newton_def, 5);
+    deflation_operator_t *deflation_op = new deflation_operator_t(vec_ops_R_im, log, newton_def, max_failed_attempts);
 
-    
+    deflation_op->save_norms("deflation_norms_KS.dat");
     deflation_op->execute_all(lambda_0, KS2D, sol_storage_def);
     //deflation_op->find_solution(lambda_0, KS2D, sol_storage_def);
     
@@ -111,6 +115,9 @@ int main(int argc, char const *argv[])
         std::ostringstream stringStream_vec;
         stringStream_vec << "u_im_out_" << (p) << ".dat";
         gpu_file_operations_functions::write_vector<real>(stringStream_vec.str(), Nx*My-1, (real_im_vec&)x, 3);
+        std::ostringstream stringStream_pos;
+        stringStream_pos << "u_out_" << (p) << ".pos";
+        KS2D->write_solution(stringStream_pos.str(), (const real_im_vec&)x);
         p++;
     }
    

@@ -13,7 +13,9 @@
 #include <nonlinear_operators/Kuramoto_Sivashinskiy_2D/system_operator.h>
 
 #include <numerical_algos/lin_solvers/default_monitor.h>
+#include <numerical_algos/lin_solvers/bicgstab.h>
 #include <numerical_algos/lin_solvers/bicgstabl.h>
+#include <numerical_algos/lin_solvers/gmres.h>
 #include <numerical_algos/lin_solvers/sherman_morrison_linear_system_solve.h>
 
 #include <deflation/system_operator_deflation.h>
@@ -28,7 +30,7 @@
 #include <common/gpu_file_operations_functions.h>
 #include <common/gpu_vector_operations.h>
 
-#define Blocks_x_ 32
+#define Blocks_x_ 64
 #define Blocks_y_ 16
 
 
@@ -64,6 +66,8 @@
         monitor_t,
         log_t,
         numerical_algos::lin_solvers::bicgstabl> sherman_morrison_linear_system_solve_t;
+        // numerical_algos::lin_solvers::bicgstabl
+        // numerical_algos::lin_solvers::gmres
 
     typedef deflation::newton_method_extended::convergence_strategy<
         vec_ops_real_im, 

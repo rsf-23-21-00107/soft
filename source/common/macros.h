@@ -1,6 +1,10 @@
 #ifndef __ARNOLDI_MACROS_H__
 #define __ARNOLDI_MACROS_H__
 
+#define BLOCK_SIZE_1D 1024
+#define BLOCK_SIZE_X 64
+#define BLOCK_SIZE_Y 16
+
 #ifndef I2_R
 	#define I2_R(i , j, Rows) (i)+(j)*(Rows)
 #endif

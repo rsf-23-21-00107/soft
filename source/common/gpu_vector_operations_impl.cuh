@@ -26,17 +26,17 @@ void gpu_vector_operations<T, BLOCK_SIZE>::curandGenerateUniformDistribution(cur
 }
 
 template <>
-void gpu_vector_operations<float, 1024>::curandGenerateUniformDistribution(curandGenerator_t gen, vector_type& vector)
+void gpu_vector_operations<float, BLOCK_SIZE_1D>::curandGenerateUniformDistribution(curandGenerator_t gen, vector_type& vector)
 {
     CURAND_SAFE_CALL( curandGenerateUniform(gen, vector, sz) );
 }
 template <>
-void gpu_vector_operations<double, 1024>::curandGenerateUniformDistribution(curandGenerator_t gen, vector_type& vector)
+void gpu_vector_operations<double, BLOCK_SIZE_1D>::curandGenerateUniformDistribution(curandGenerator_t gen, vector_type& vector)
 {
     CURAND_SAFE_CALL( curandGenerateUniformDouble(gen, vector, sz) );
 }
 template <>
-void gpu_vector_operations<thrust::complex<float>, 1024>::curandGenerateUniformDistribution(curandGenerator_t gen, vector_type& vector)
+void gpu_vector_operations<thrust::complex<float>, BLOCK_SIZE_1D>::curandGenerateUniformDistribution(curandGenerator_t gen, vector_type& vector)
 {
     
     float* vector_real;
@@ -68,7 +68,7 @@ void gpu_vector_operations<thrust::complex<float>, 1024>::curandGenerateUniformD
     device_deallocate(vector_imag);
 }
 template <>
-void gpu_vector_operations<thrust::complex<double>, 1024>::curandGenerateUniformDistribution(curandGenerator_t gen, vector_type& vector)
+void gpu_vector_operations<thrust::complex<double>, BLOCK_SIZE_1D>::curandGenerateUniformDistribution(curandGenerator_t gen, vector_type& vector)
 {
     double* vector_real;
     double* vector_imag;
@@ -114,12 +114,12 @@ void gpu_vector_operations<T, BLOCK_SIZE>::scale_adapter(scalar_type a, scalar_t
     add_mul_scalar(a, (b-a), vec);
 }
 template <>
-void gpu_vector_operations<thrust::complex<double>, 1024>::scale_adapter(scalar_type a, scalar_type b, vector_type& vec)
+void gpu_vector_operations<thrust::complex<double>, BLOCK_SIZE_1D>::scale_adapter(scalar_type a, scalar_type b, vector_type& vec)
 {
     scale_complex_vector<thrust::complex<double>, vector_type><<<dimGrid, dimBlock>>>(sz, a, b, vec);
 }
 template<>
-void gpu_vector_operations<thrust::complex<float>, 1024>::scale_adapter(scalar_type a, scalar_type b, vector_type& vec)
+void gpu_vector_operations<thrust::complex<float>, BLOCK_SIZE_1D>::scale_adapter(scalar_type a, scalar_type b, vector_type& vec)
 {
     scale_complex_vector<thrust::complex<float>, vector_type><<<dimGrid, dimBlock>>>(sz, a, b, vec);
 }
@@ -188,17 +188,17 @@ __global__ void check_is_valid_number_kernel(size_t N, const thrust::complex<flo
 
 }
 
-template <typename T, int BLOCK_SIZE>
-bool gpu_vector_operations<T, BLOCK_SIZE>::check_is_valid_number(const vector_type& x)const
-{
-    bool result_h=true, *result_d;
-    result_d=device_allocate<bool>(1);
-    host_2_device_cpy<bool>(result_d, &result_h, 1);
-    check_is_valid_number_kernel<T><<<dimGrid, dimBlock>>>(sz, x, result_d);
-    device_2_host_cpy<bool>(&result_h, result_d, 1);
-    CUDA_SAFE_CALL(cudaFree(result_d));
-    return result_h;
-}
+// template <typename T, int BLOCK_SIZE>
+// bool gpu_vector_operations<T, BLOCK_SIZE>::check_is_valid_number(const vector_type& x)const
+// {
+//     bool result_h=true, *result_d;
+//     result_d=device_allocate<bool>(1);
+//     host_2_device_cpy<bool>(result_d, &result_h, 1);
+//     check_is_valid_number_kernel<T><<<dimGrid, dimBlock>>>(sz, x, result_d);
+//     device_2_host_cpy<bool>(&result_h, result_d, 1);
+//     CUDA_SAFE_CALL(cudaFree(result_d));
+//     return result_h;
+// }
 //===
 template<typename T> 
 __global__ void assign_scalar_kernel(size_t N, const T scalar, T* x)
@@ -377,6 +377,21 @@ void gpu_vector_operations<T, BLOCK_SIZE>::mul_pointwise(const scalar_type mul_x
 }
 //===
 
+template<typename T>
+__global__ void mul_pointwise_kernel(size_t N, const T mul_x, const T* x, const T* y, const T* z, T* u)
+{
+    size_t j = blockIdx.x*blockDim.x + threadIdx.x;
+    if(j>=N) return;
+
+    u[j] = mul_x*x[j]*y[j]*z[j];
+}
+
+template <typename T, int BLOCK_SIZE>
+void gpu_vector_operations<T, BLOCK_SIZE>::mul_pointwise(const scalar_type mul_x, const vector_type& x, const vector_type& y, const vector_type& z, vector_type& u)const
+{
+    mul_pointwise_kernel<scalar_type><<<dimGrid, dimBlock>>>(sz, mul_x, x, y, z, u);
+}
+//===
 template<typename T>
 __global__ void mul_pointwise_kernel(size_t N, T* x, const T mul_y, const T* y)
 {

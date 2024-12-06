@@ -5,12 +5,13 @@
 #include <utils/cuda_support.h>
 #include <external_libraries/cublas_wrap.h>
 #include <utils/curand_safe_call.h>
+#include <common/macros.h>
 #include <common/ogita/gpu_reduction_ogita.h>
 #include <random>
 #include <initializer_list>
 #include <utility>
 #include <stdexcept>
-
+#include <vector>
 
 //debug for file output!
 #include <iostream>
@@ -106,11 +107,12 @@ struct vec_ops_vector_complex_type_help< thrust::complex<double>* >
 
 
 
-template <typename T, int BLOCK_SIZE = 1024>
+template <typename T, int BLOCK_SIZE = BLOCK_SIZE_1D>
 struct gpu_vector_operations
 {
     using scalar_type = T;
     using vector_type = T*;
+    using multivector_type = std::vector<vector_type>;
     //typedef typename gpu_vector_operations_type::vec_ops_scalar_complex_type_help<T>::norm_type Tsc;
     using norm_type = typename gpu_vector_operations_type::vec_ops_scalar_complex_type_help<scalar_type>::norm_type;
     using vector_type_real = typename gpu_vector_operations_type::vec_ops_vector_complex_type_help<vector_type>::vec_type;
@@ -227,6 +229,47 @@ struct gpu_vector_operations
         std::initializer_list<int>{((void)stop_use_vector(std::forward<Args>(args)), 0 )...};
     }
 
+
+    //multivectors:
+    //multivector operations:
+    void init_multivector(multivector_type& x, std::size_t m) const
+    {
+        x = multivector_type();
+        x.reserve(m);
+        for(std::size_t j=0;j<m;j++)
+        {
+            vector_type x_l;
+            init_vector(x_l);
+            x.push_back(x_l);
+        }
+    }
+    void free_multivector(multivector_type& x, std::size_t m) const
+    {
+        for(std::size_t j=0;j<m;j++)
+        {
+            free_vector(x[j]);
+        }    
+    }
+    void start_use_multivector(multivector_type& x, std::size_t m) const
+    {
+        for(std::size_t j=0;j<m;j++)
+        {
+            start_use_vector(x[j]);
+        }
+    }
+    void stop_use_multivector(multivector_type& x, std::size_t m) const
+    {
+    }
+    [[nodiscard]] vector_type& at(multivector_type& x, std::size_t m, std::size_t k_) const
+    {
+        if (k_ < 0 || k_>=m  ) 
+        {
+            throw std::out_of_range("cpu_vector_operations: multivector.at");
+        }
+        return x[k_];
+    }
+
+
     size_t get_vector_size() const
     {
         return sz;
@@ -294,14 +337,13 @@ struct gpu_vector_operations
         std::ofstream check_file(f_name);
         for(size_t j=0; j<sz-1; j++)
         {
-            check_file << std::scientific << std::setprecision(16) << x_host[j] << std::endl;
+            check_file <<  x_host[j] << std::endl; //std::scientific << std::setprecision(16) <<
         }
-        check_file << std::scientific << std::setprecision(16) << x_host[sz-1];
+        check_file << x_host[sz-1]; //<< std::scientific << std::setprecision(16)
         check_file.close();
     }
     //DEBUG ENDS!
 
-    bool check_is_valid_number(const vector_type &x)const;
     // dot product of two vectors
     scalar_type scalar_prod(const vector_type &x, const vector_type &y)const
     {
@@ -316,6 +358,15 @@ struct gpu_vector_operations
         }
         return (result);
     }
+    bool is_valid_number(const vector_type &x)const
+    {
+        return std::isfinite(norm(x));
+    }
+    bool check_is_valid_number(const vector_type &x)const
+    {
+        return is_valid_number(x);
+    }
+
     void scalar_prod(const vector_type &x, const vector_type &y, scalar_type *result)
     {
         if(use_high_precision_dot)
@@ -568,13 +619,16 @@ struct gpu_vector_operations
     void add_mul(const scalar_type mul_x, const vector_type& x, const scalar_type mul_y, const vector_type& y, 
                             const scalar_type mul_z, vector_type& z)const;
     //calc: z := (mul_x*x)*(mul_y*y)
-    void mul_pointwise(const scalar_type mul_x, const vector_type& x, const scalar_type mul_y, const vector_type& y, 
-                        vector_type& z)const;
+    void mul_pointwise(const scalar_type mul_x, const vector_type& x, const scalar_type mul_y, const vector_type& y, vector_type& z)const;
     //calc: x := x*mul_y*y
     void mul_pointwise(vector_type& x, const scalar_type mul_y, const vector_type& y)const;
+    //calc: u := mul_x*x*y*z
+    void mul_pointwise(const scalar_type mul_x, const vector_type& x, const vector_type& y, const vector_type& z, vector_type& u)const;
+
     //calc: z := (mul_x*x)/(mul_y*y)
     void div_pointwise(const scalar_type mul_x, const vector_type& x, const scalar_type mul_y, const vector_type& y, 
                         vector_type& z)const;
+
     //calc: x := x/(mul_y*y)
     void div_pointwise(vector_type& x, const scalar_type mul_y, const vector_type& y)const;
     //calc: z := mul_x*x + mul_y*y + mul_w*w + mul_z*z;
@@ -591,6 +645,17 @@ struct gpu_vector_operations
     //return value from the vector x[at]
     T get_value_at_point(size_t at, vector_type& x) const;
 
+
+    //call to wrapers with other names
+    void add_lin_comb(const scalar_type mul_x, const vector_type& x, const scalar_type mul_y, vector_type& y) const
+    {
+        add_mul(mul_x, x, mul_y, y);
+    }
+    void add_lin_comb(const scalar_type mul_x, const vector_type& x, const scalar_type mul_y, const vector_type& y, const scalar_type mul_z, vector_type& z) const
+    {
+        add_mul(mul_x, x, mul_y, y, mul_z, z);
+    }  
+    
     //calc: x := <pseudo random vector with values in (0,1] > 
     void assign_random(vector_type& vec)
     {

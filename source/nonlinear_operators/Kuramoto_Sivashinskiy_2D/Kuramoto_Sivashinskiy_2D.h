@@ -24,14 +24,15 @@
 #include <nonlinear_operators/Kuramoto_Sivashinskiy_2D/plot_solution.h>
 #include <vector>
 #include <ctime>
-
+#include <iostream>
+#include <fstream>
 
 namespace nonlinear_operators
 {
 
 
 template<class FFT_type, class VectorOperations_R, class VectorOperations_C, class VectorOperations_RC_reduced, 
-unsigned int BLOCK_SIZE_x=64, unsigned int BLOCK_SIZE_y=16>
+unsigned int BLOCK_SIZE_x=32, unsigned int BLOCK_SIZE_y=16>
 class Kuramoto_Sivashinskiy_2D
 {
 public:
@@ -93,9 +94,11 @@ public:
         vec_ops_C->stop_use_vector(u_0); vec_ops_C->free_vector(u_0);
         vec_ops_C->stop_use_vector(u_x_hat0); vec_ops_C->free_vector(u_x_hat0);
         vec_ops_C->stop_use_vector(u_y_hat0); vec_ops_C->free_vector(u_y_hat0);
+        vec_ops_C->stop_use_vector(mask23); vec_ops_C->free_vector(mask23);
+
 
         vec_ops_C->stop_use_vector(u_helper_in); vec_ops_C->free_vector(u_helper_in);
-        vec_ops_C->stop_use_vector(u_helper_out); vec_ops_C->free_vector(u_helper_out);
+        vec_ops_C->stop_use_vectors(u_helper_out, u_C_helper_fft, u_helper_out_1); vec_ops_C->free_vectors(u_helper_out, u_C_helper_fft, u_helper_out_1);
 
 
         vec_ops_R->stop_use_vector(w1_ext); vec_ops_R->free_vector(w1_ext);
@@ -111,7 +114,56 @@ public:
         vec_ops_R->stop_use_vector(u_y_ext_0); vec_ops_R->free_vector(u_y_ext_0);
         vec_ops_R->stop_use_vector(du_ext); vec_ops_R->free_vector(du_ext);
         vec_ops_R->stop_use_vector(du_x_ext); vec_ops_R->free_vector(du_x_ext);
-        vec_ops_R->stop_use_vector(du_y_ext); vec_ops_R->free_vector(du_y_ext);
+        vec_ops_R->stop_use_vectors(du_y_ext, u_R_helper_fft); vec_ops_R->free_vectors(du_y_ext, u_R_helper_fft);
+
+    }
+
+
+    void print_complex_2d(const std::string& file_name, const TC_vec& uC_in)
+    {
+        std::vector<TC> uC_out_h(Nx*My,0);
+        device_2_host_cpy(uC_out_h.data(), uC_in, Nx*My);
+        std::ofstream f(file_name, std::ofstream::out);
+
+        for(int j = 0;j<Nx;j++)
+        {
+            for(int k = 0;k<My;k++)
+            {
+                f << uC_out_h[I2(j,k,My)] << " ";
+            }
+            f << std::endl;
+        }
+        f.close();
+    }
+
+    void print_real_2d(const std::string& file_name, const T_vec& uC_in)
+    {
+        std::vector<T> uC_out_h(Nx*Ny,0);
+        device_2_host_cpy(uC_out_h.data(), uC_in, Nx*Ny);
+        std::ofstream f(file_name, std::ofstream::out);
+
+        for(int j = 0;j<Nx;j++)
+        {
+            for(int k = 0;k<Ny;k++)
+            {
+                f << uC_out_h[I2(j,k,Ny)] << " ";
+            }
+            f << std::endl;
+        }
+        f.close();
+    }
+
+    void print_vec(const std::string& file_name, const T_vec_im& v_in)
+    {
+        auto sz = vec_ops_R_im->get_vector_size();
+        std::vector<T> out_h(sz, 0);
+        device_2_host_cpy(out_h.data(), v_in, sz);
+        std::ofstream f(file_name, std::ofstream::out);
+        for(int j = 0;j<sz;j++)
+        {
+            f << out_h[j] << std::endl;
+        }
+        f.close();
 
     }
 
@@ -120,18 +172,35 @@ public:
     void F(const TC_vec& u, const T alpha, TC_vec& v)
     {
         
-        vec_ops_C->mul_pointwise(TC(1.0,0.0), (const TC_vec&) u, TC(1.0,0.0), (const TC_vec&)gradient_x, u_x_hat);
-        vec_ops_C->mul_pointwise(TC(1.0,0.0), (const TC_vec&) u, TC(1.0,0.0), (const TC_vec&)gradient_y, u_y_hat);
+        // print_complex_2d("u_hat.dat", u);
+        vec_ops_C->mul_pointwise(TC(1.0,0.0), (const TC_vec&) u, (const TC_vec&)gradient_x, mask23, u_x_hat);
+        vec_ops_C->mul_pointwise(TC(1.0,0.0), (const TC_vec&) u, (const TC_vec&)gradient_y, mask23, u_y_hat);
         
+        vec_ops_C->mul_pointwise(TC(1,0), u, TC(1,0), mask23, u_helper_out);
+
         ifft(u_x_hat, u_x_ext);
         ifft(u_y_hat, u_y_ext);
-        ifft((TC_vec&)u, u_ext);
+        ifft(u_helper_out, u_ext);
+        // print_complex_2d("u_x_hat.dat", u_x_hat);
+        // print_complex_2d("u_y_hat.dat", u_y_hat);
+
+        // print_real_2d("u_x_ext.dat", u_x_ext);
+        // print_real_2d("u_y_ext.dat", u_y_ext);
+        // print_real_2d("u_ext.dat", u_ext);
+
 
         //z=x*y;
         vec_ops_R->mul_pointwise(1.0, u_x_ext, 1.0, u_ext, w1_ext);
         vec_ops_R->mul_pointwise(1.0, u_y_ext, 1.0, u_ext, w2_ext);
+
+        // print_real_2d("w1_ext.dat", w1_ext);
+        // print_real_2d("w2_ext.dat", w2_ext);
+
         fft(w1_ext, u_x_hat);
         fft(w2_ext, u_y_hat);
+
+        // print_complex_2d("w1_hat.dat", u_x_hat);
+        // print_complex_2d("w2_hat.dat", u_y_hat);
 
         // b_val*biharmonic*u->v
         vec_ops_C->mul_pointwise(TC(1.0), (const TC_vec&) u, TC(b_val), (const TC_vec&)biharmonic, v);
@@ -144,9 +213,6 @@ public:
        
         // b_hat+v->v
         vec_ops_C->add_mul(TC(1.0), (const TC_vec&)b_hat, v);
-       
-
-        
     }
     void F(const T_vec_im& u, const T alpha, T_vec_im& v)
     {
@@ -155,13 +221,23 @@ public:
         R2C(u, u_helper_in);
         F(u_helper_in, alpha, u_helper_out);
         C2R(u_helper_out, v);
-
+        // vec_ops_R_im->debug_view(v, "f_out.dat");
+        // exit(1);
     }
- 
+
+    void fft_test(const T_vec& u_in, TC_vec& u_out)
+    {
+        fft(u_in, u_out);
+        // vec_ops_C->scale(1.0/(Nx*Ny), u_out);
+    }
+    void ifft_test(const TC_vec& u_in, T_vec& u_out)
+    {
+        ifft(u_C_helper_fft, u_out);   
+    }
+
     //just a void function to comply with the convergence_strategy.
     void project(T_vec_im& v)
     {
-
     }
     //just a void function to comply with convergence_strategy.
     T check_solution_quality(const T_vec_im& v)
@@ -175,9 +251,10 @@ public:
     {
         vec_ops_C->assign(u_0_,u_0);
         alpha_0=alpha_0_;
-        ifft((TC_vec&)u_0,u_ext_0);
-        vec_ops_C->mul_pointwise(TC(1.0,0.0), (const TC_vec&) u_0, TC(1.0,0.0), (const TC_vec&)gradient_x, u_x_hat);
-        vec_ops_C->mul_pointwise(TC(1.0,0.0), (const TC_vec&) u_0, TC(1.0,0.0), (const TC_vec&)gradient_y, u_y_hat);
+        vec_ops_C->mul_pointwise(TC(1,0), u_0, TC(1,0), mask23, u_helper_in);
+        ifft(u_helper_in, u_ext_0);
+        vec_ops_C->mul_pointwise(TC(1.0,0.0), (const TC_vec&) u_0, (const TC_vec&)gradient_x, mask23, u_x_hat);
+        vec_ops_C->mul_pointwise(TC(1.0,0.0), (const TC_vec&) u_0, (const TC_vec&)gradient_y, mask23, u_y_hat);
         ifft(u_x_hat,u_x_ext_0);
         ifft(u_y_hat,u_y_ext_0);
 
@@ -194,9 +271,10 @@ public:
     //returns vector dv as Jdu->dv, where J(u_0,alpha_0) linearized at (u_0, alpha_0) by set_linearization_point
     void jacobian_u(const TC_vec& du, TC_vec& dv)
     {
-        ifft((TC_vec&)du, du_ext);
-        vec_ops_C->mul_pointwise(TC(1.0,0.0), (const TC_vec&) du, TC(1.0,0.0), (const TC_vec&)gradient_x, u_x_hat);
-        vec_ops_C->mul_pointwise(TC(1.0,0.0), (const TC_vec&) du, TC(1.0,0.0), (const TC_vec&)gradient_y, u_y_hat);
+        vec_ops_C->mul_pointwise(TC(1,0), du, TC(1,0), mask23, u_helper_out);
+        ifft(u_helper_out, du_ext);
+        vec_ops_C->mul_pointwise(TC(1.0,0.0), (const TC_vec&) du, (const TC_vec&)gradient_x, mask23, u_x_hat);
+        vec_ops_C->mul_pointwise(TC(1.0,0.0), (const TC_vec&) du, (const TC_vec&)gradient_y, mask23, u_y_hat);
         ifft(u_x_hat,du_x_ext);
         ifft(u_y_hat,du_y_ext);            
         vec_ops_R->mul_pointwise(1.0, du_x_ext, 1.0, u_ext_0, w1_ext_0);
@@ -224,6 +302,12 @@ public:
                             TC(1.0), u_x_hat, TC(1.0), u_y_hat);
         // a_val_alpha*u_y_hat+b_hat+dv->dv
         vec_ops_C->add_mul(TC(a_val*alpha_0), u_y_hat, TC(1.0), b_hat, TC(1.0), dv);
+
+        // print_complex_2d("u_x_hat.dat", u_x_hat);
+        // print_complex_2d("u_x_hat.dat", u_y_hat);
+        
+        // print_complex_2d("df_out.dat", dv);
+        // exit(1);        
 
     }
     void jacobian_u(const T_vec_im& du, T_vec_im& dv)
@@ -398,33 +482,71 @@ public:
         C2R(u_helper_out, u_out);
     }
 
-    void randomize_vector(T_vec_im& u_out, int steps_ = -1)
+    void randomize_vector(T_vec_im& u_out, int steps_ = -1, bool random = true)
     {
-        vec_ops_R->assign_random(du_x_ext);
-        int steps = steps_;
-        
-        if(steps_ == -1)
+        std::srand(unsigned(std::time(0))); //init new seed
+        if(random)
         {
-            std::srand(unsigned(std::time(0))); //init new seed
-            steps = std::rand()%8 + 1;     // random from 1 to 8
+            const int NN = 4;            
+            vec_ops_R->assign_random(du_x_ext);
+            int steps = steps_;
+            
+            if(steps_ == -1)
+            {
+                steps = std::rand()%NN + 1;     // random from 1 to NN
+            }        
 
-        }        
 
+            fourier_solution(du_x_ext, u_helper_out);
+            //vec_ops_C->assign_scalar(TC(steps,0), u_helper_out);
+            T ww = std::pow(1.0*steps, 1.0/(1.0*steps) );
+            T dt = 0.1;
+            for(int st=0;st<steps;st++)
+            {
+                apply_smooth<T, TC>(dimGrid_F, dimBlock, Nx, My, dt,  (TC_vec&)Laplace, u_helper_out, u_helper_out_1);
+                vec_ops_C->assign_mul(ww, u_helper_out_1, u_helper_out);
+            }
+            vec_ops_C->normalize(u_helper_out_1);
+            vec_ops_C->scale(steps*Nx*Ny*steps/dt, u_helper_out_1);
 
-        fourier_solution(du_x_ext, u_helper_out);
-        //vec_ops_C->assign_scalar(TC(steps,0), u_helper_out);
-
-        for(int st=0;st<steps;st++)
-        {
-            apply_smooth<T, TC>(dimGrid_F, dimBlock, Nx, My, T(10.0*steps), T(0.1), Laplace, u_helper_out);
+            C2R(u_helper_out_1, u_out);
+            // T_vec u_out_ph;
+            // vec_ops_R->init_vector(u_out_ph); vec_ops_R->start_use_vector(u_out_ph);
+            // physical_solution(u_out, u_out_ph);
+            // plot->write_to_disk("random_vector.pos", u_out_ph);
+            // vec_ops_R->stop_use_vector(u_out_ph); vec_ops_R->free_vector(u_out_ph);
+            // exit(1);
         }
+        else
+        {
+            auto exp_func = [](int j, int k, int shift, T muu)
+            {
+                return exp( -muu*((j-shift)*(j-shift)+(k-shift)*(k-shift)) );
+            };
+            std::vector<T> uR_in_h(Nx*Ny,0);
 
+            int shift1 = std::max(std::floor(Nx/3), std::floor(Ny/3));
+            int shift2 = std::max(std::floor(2*Nx/3), std::floor(2*Ny/3));
 
-        C2R(u_helper_out, u_out);
-
-        // std::string file_name = "sooth_file_" + std::to_string(steps) + std::string(".pos");
-        // write_solution(file_name, u_out);
-
+            for(int j=0;j<Nx;j++)
+            {
+                for(int k=0;k<Ny;k++)
+                {
+                    T muu = 0.05;
+                    uR_in_h[I2(j,k,Ny)] = exp_func(j,k,shift1,muu)-exp_func(j,k,shift2,muu);
+                }
+            }        
+            host_2_device_cpy(du_x_ext, uR_in_h.data(), Nx*Ny);
+            fft(du_x_ext, u_helper_out);
+            print_complex_2d("rand_vec_hat.dat", u_helper_out);
+            C2R(u_helper_out, u_out);
+            R2C(u_out,u_helper_out);
+            print_complex_2d("rand_vec_hat_c2v2c.dat", u_helper_out);
+            C2R(u_helper_out, u_out);
+            // print_vec("rand_vec.dat", u_out);
+            // std::string file_name = "sooth_file_" + std::to_string(steps) + std::string(".pos");
+            // write_solution(file_name, u_out);
+        }
     }
     
     void write_solution(const std::string& f_name, const T_vec_im& u_in)
@@ -482,10 +604,12 @@ private:
     TC_vec u_0=nullptr; // linearization point solution
     TC_vec u_x_hat0=nullptr;
     TC_vec u_y_hat0=nullptr;
-    
+    TC_vec u_C_helper_fft = nullptr;
+    TC_vec u_helper_out_1 = nullptr;
+
     TC_vec u_helper_in = nullptr;  //vector for using only R outside
     TC_vec u_helper_out = nullptr;  //vector for using only R outside
-
+    TC_vec mask23 = nullptr;
 
     T alpha_0=0.0;   // linearization point parameter
 
@@ -503,6 +627,7 @@ private:
     T_vec du_ext=nullptr;
     T_vec du_x_ext=nullptr;
     T_vec du_y_ext=nullptr;
+    T_vec u_R_helper_fft = nullptr;
 
     plot_t* plot;
 
@@ -519,9 +644,9 @@ private:
         vec_ops_C->init_vector(u_0); vec_ops_C->start_use_vector(u_0); 
         vec_ops_C->init_vector(u_x_hat0); vec_ops_C->start_use_vector(u_x_hat0); 
         vec_ops_C->init_vector(u_y_hat0); vec_ops_C->start_use_vector(u_y_hat0); 
- 
+        vec_ops_C->init_vector(mask23); vec_ops_C->start_use_vector(mask23); 
         vec_ops_C->init_vector(u_helper_in); vec_ops_C->start_use_vector(u_helper_in); 
-        vec_ops_C->init_vector(u_helper_out); vec_ops_C->start_use_vector(u_helper_out);
+        vec_ops_C->init_vectors(u_helper_out, u_C_helper_fft, u_helper_out_1); vec_ops_C->start_use_vectors(u_helper_out, u_C_helper_fft, u_helper_out_1);
 
         vec_ops_R->init_vector(w1_ext); vec_ops_R->start_use_vector(w1_ext); 
         vec_ops_R->init_vector(w2_ext); vec_ops_R->start_use_vector(w2_ext); 
@@ -535,10 +660,61 @@ private:
         vec_ops_R->init_vector(u_y_ext_0); vec_ops_R->start_use_vector(u_y_ext_0);
         vec_ops_R->init_vector(du_ext); vec_ops_R->start_use_vector(du_ext);
         vec_ops_R->init_vector(du_x_ext); vec_ops_R->start_use_vector(du_x_ext);
-        vec_ops_R->init_vector(du_y_ext); vec_ops_R->start_use_vector(du_y_ext);
+        vec_ops_R->init_vectors(du_y_ext,u_R_helper_fft); vec_ops_R->start_use_vectors(du_y_ext,u_R_helper_fft);
         
-        plot = new plot_t(vec_ops_R, Nx, Ny, T(2*3.14159265358979), T(2*3.14159265358979) ) ;    
+        plot = new plot_t(vec_ops_R, Nx, Ny, T(2*3.14159265358979), T(2*3.14159265358979) ) ; 
+        form_mask();   
     }
+
+    template<class Vec>
+    void build_mask_matrix(int Nx, int Ny, Vec& mask_2_3)
+    {
+
+        int m,n;
+        for(int k=0;k<Ny;k++)
+        {  
+            n=k;
+            
+            for(int j=0;j<Nx;j++){
+                m=j; 
+                if(j>=Nx/2) m=j-Nx;
+                
+                T kx=m;
+                T ky=n;
+                T kxMax=Nx;
+                T kyMax=Ny;
+
+                T sphere2 = 4*kx*kx/(kxMax*kxMax)+ky*ky/(kyMax*kyMax); //4 because maxNx/2
+
+                //  2/3 limitation!
+                if(sphere2<4.0/9.0)
+                {
+                    mask_2_3[I2(j,k,Ny)]=TC(1.0,0);
+                }
+                else
+                {
+                    mask_2_3[I2(j,k,Ny)]=0.0; //!
+                }
+
+            }
+        }  
+        mask_2_3[0]=0.0;
+    }
+
+    void form_mask()
+    {
+        
+        std::vector<TC> mask23_h(Nx*My, 0);
+        build_mask_matrix(Nx, My, mask23_h );
+        host_2_device_cpy<TC>(mask23, mask23_h.data() , Nx*My);
+        // std::vector<T> mask23_rh;
+        // for(auto &x: mask23_h)
+        // {
+        //     mask23_rh.push_back( x.real() );
+        // }
+        // plot->write_out_file_pos("mask_ks.pos", mask23_rh.data(), Nx, My, 1);
+    }
+
 
     void init_all_derivatives()
     {
@@ -576,15 +752,17 @@ private:
         biharmonic_Fourier<TC>(dimGrid_F, dimBlock, Nx, My, gradient_x, gradient_y, biharmonic);
     }
 
-    void ifft(TC_vec& u_hat_, T_vec& u_)
+    void ifft(const TC_vec& u_hat_, T_vec& u_)
     {
-        FFT->ifft(u_hat_, u_);
+        vec_ops_C->assign_mul(1, u_hat_, u_C_helper_fft);
+        FFT->ifft(u_C_helper_fft, u_);
         T scale = T(1.0)/(Nx*Ny);
         vec_ops_R->scale(scale, u_);
     }
-    void fft(T_vec& u_, TC_vec& u_hat_)
+    void fft(const T_vec& u_, TC_vec& u_hat_)
     {
-        FFT->fft(u_, u_hat_);
+        vec_ops_R->assign_mul(1, u_, u_R_helper_fft);
+        FFT->fft(u_R_helper_fft, u_hat_);
         // TC scale = TC((1.0)/(Nx*Ny), 0);
         // vec_ops_C->scale(scale, u_hat_);
     }

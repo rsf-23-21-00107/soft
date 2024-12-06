@@ -70,8 +70,13 @@ public:
     }
     
 
-    bool check_convergence(NonlinearOperator* nonlin_op, T_vec& x, T lambda, T_vec& delta_x, int& result_status)
+    bool check_convergence(NonlinearOperator* nonlin_op, T_vec& x, T lambda, T_vec& delta_x, int& result_status, bool lin_solver_converged = true)
     {
+        if(!lin_solver_converged)
+        {
+            result_status = 5;
+            return true;
+        }
         reset_wight();
         bool finish = false;
         nonlin_op->F(x, lambda, Fx);
@@ -90,7 +95,7 @@ public:
             vec_ops->assign_mul(T(1.0), x, newton_wight, delta_x, x1);
             nonlin_op->F(x1, lambda, Fx);
             normFx1 = vec_ops->norm(Fx);
-            if(normFx1 < (1.0 + std::numeric_limits<T>::epsilon() )*normFx)
+            if((normFx1 < (1.0 + std::numeric_limits<T>::epsilon() )*normFx)||(normFx1<tolerance))
             {
                 result_status = 0;
                 if(iterations_residual)

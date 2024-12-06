@@ -8,9 +8,17 @@ Examples of the nonlinear operators include:
 - 1D/2D Kuramoto-Sivashinksi system on periodic domain (targets: Kuramoto\_Sivashinskiy\_2D\_ker, KS\_bd).
 - 2D Kolmogorov flow problem for Navier-Stokes equations (targets: Kolmogorov\_2D\_ker, KF2D\_bd).
 - 3D Kolmogorov flow problem for Navier-Stokes equations (targets: Kolmogorov\_3D\_ker, KF3D\_bd).
+- 3D Kolmogorov flow problem for Navier-Stokes equations with defation of SO(2) group (targets: deflation\_translation\_Kolmogorov\_3D).
 - 3D ABC flow problem for Navier-Stokes equations (targets: abc\_flow\_ker, abc\_bd).
+- overscreening breakdown problem (targets: ob\_ker, ob\_ker\_var\_prec, test\_ob, ob\_json).
 
-# The application of this software or its parts is discribed in the following papers, supported by the RSF grand 23-21-00107:
+## The application of this software or its parts is discribed in the following papers. 
+### Supported by the RSF grant 23-21-00107:
 - (https://doi.org/10.1007/978-3-031-38864-4_11)
 - (https://doi.org/10.3390/math11183875)
 - (https://doi.org/10.3390/math11204336)
+- (https://doi.org/10.3390/math12213389)
+- (https://doi.org/10.14357/20790279240401)
+### Supported by the RSF grant 23-21-00095:
+- (https://doi.org/10.1016/j.jcis.2024.08.040)
+

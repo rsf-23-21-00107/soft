@@ -11,6 +11,7 @@
 #include <utils/log.h>
 #include <numerical_algos/lin_solvers/default_monitor.h>
 #include <numerical_algos/lin_solvers/bicgstabl.h>
+#include <numerical_algos/lin_solvers/gmres.h>
 #include <numerical_algos/lin_solvers/sherman_morrison_linear_system_solve.h>
 
 #include <nonlinear_operators/Kolmogorov_flow_3D/Kolmogorov_3D.h>
@@ -30,8 +31,7 @@
 #include <common/macros.h>
 #include <common/gpu_file_operations.h>
 #include <common/gpu_vector_operations.h>
-
-
+#include <continuation/single_file_json_params.hpp>
 
 
 #define Blocks_x_ 32
@@ -71,6 +71,14 @@ int main(int argc, char const *argv[])
             monitor_t,
             log_t
             >;
+    // using lin_solver_t =  numerical_algos::lin_solvers::gmres
+    //         <
+    //         lin_op_t,
+    //         prec_t,
+    //         gpu_vector_operations_t,
+    //         monitor_t,
+    //         log_t
+    //         >;            
     using convergence_newton_t =  nonlinear_operators::newton_method::convergence_strategy
             <
             gpu_vector_operations_t, 
@@ -101,7 +109,8 @@ int main(int argc, char const *argv[])
             gpu_vector_operations_t,
             monitor_t,
             log_t,
-            numerical_algos::lin_solvers::bicgstabl
+            // numerical_algos::lin_solvers::bicgstabl
+            numerical_algos::lin_solvers::gmres
             >;
     using knots_t = container::knots<T>;
     using container_helper_t = container::curve_helper_container<gpu_vector_operations_t>;
@@ -130,23 +139,78 @@ int main(int argc, char const *argv[])
             >;
 //  typedefs ends
 
-    if(argc != 11)
-    {
-        std::cout << argv[0] << " Steps R_min R_max file_name alpha R N high_prec direction dS:\n    Steps - number of continuation steps;\n    R_min, R_max - minimum and maximum Reynolds numbers;\n    file_name - name of the file with an initial solution;\n    0<alpha<=1 - torus stretching parameter;\n    R is the Reynolds number that corresponds to the file_name solution;\n    N - discretization in one direction;\n    high_prec = (0/1) usage of high precission reduction methods;\n    direction = (-1/1) - direction of continuation.\n    dS - step size of the continuaiton method. Not use continuaiton, if dS<0\n";
-        return(0);       
-    }
+
+
+    // if(argc != 11)
+    // {
+    //     std::cout << argv[0] << " Steps R_min R_max file_name alpha R N high_prec direction dS:\n    Steps - number of continuation steps;\n    R_min, R_max - minimum and maximum Reynolds numbers;\n    file_name - name of the file with an initial solution;\n    0<alpha<=1 - torus stretching parameter;\n    R is the Reynolds number that corresponds to the file_name solution;\n    N - discretization in one direction;\n    high_prec = (0/1) usage of high precission reduction methods;\n    direction = (-1/1) - direction of continuation.\n    dS - step size of the continuaiton method. Not use continuaiton, if dS<0\n";
+    //     return(0);       
+    // }
     
-    int steps = std::atoi(argv[1]);
-    T R_min = std::atof(argv[2]);
-    T R_max = std::atof(argv[3]);
-    std::string file_name(argv[4]);
-    T alpha = std::atof(argv[5]);
-    T R = std::atof(argv[6]);
-    size_t N = std::atoi(argv[7]);
-    int high_prec = std::atoi(argv[8]);
-    int direciton = std::atoi(argv[9]);
-    T dS_0 = std::atof(argv[10]);
-    int one_over_alpha = int(1/alpha);
+    // ./exec_file_name.bin json_file_name nz file_name R_value direction
+    if(argc != 7)
+    {
+        std::cout << argv[0] << " json_file_name nz file_name R_value direction save_folder:" << std::endl;
+        std::cout <<  "  json_file_name - configuration file for the problem," << std::endl;
+        std::cout <<  "  nz - forcing in Z direction: 0,1,2...," << std::endl;
+        std::cout <<  "  file_name - path/file_name to the starting file," << std::endl;
+        std::cout <<  "  R_value - parameter value for the starting file," << std::endl;
+        std::cout <<  "  direction - direction on which to start continuation 1/-1." << std::endl;
+        std::cout <<  "  save_folder - where the results of continuation will be stored." << std::endl;
+        return(0);          
+    }
+
+    std::string json_config_name(argv[1]);
+    int nz = std::stoi(argv[2]);
+    std::string file_name(argv[3]);
+    T R = std::stof(argv[4]);
+    int direction = std::stoi(argv[5]);
+    std::string folder(argv[6]);
+    auto params = file_params::read_parameters_json(json_config_name);
+
+
+
+    int steps = params.steps;
+    T R_min = params.R_min;
+    T R_max = params.R_max;
+    size_t N = params.N;
+    auto alpha = params.alpha;
+    int one_over_alpha = int(1.0/alpha);
+    int high_prec = params.high_prec;
+    auto dS_0 = params.dS_0;
+    auto dSmax = params.dSmax;
+    auto dSdec_mult = params.dSdec_mult;
+    auto dSinc_mult = params.dSinc_mult;    
+    unsigned int skip_output = params.skip_output;
+
+
+//  parameters for solvers
+    //linsolver control
+    unsigned int lin_solver_max_it = params.solvers_config.linear_solver.max_iterations;
+    T lin_solver_tol = params.solvers_config.linear_solver.tolerance;
+    unsigned int use_precond_resid = params.solvers_config.linear_solver.use_precond_resid;
+    unsigned int resid_recalc_freq = params.solvers_config.linear_solver.resid_recalc_freq;
+    unsigned int basis_sz = params.solvers_config.linear_solver.basis_sz;
+    //extended linsolver control
+    unsigned int lin_solver_max_it_ex = params.solvers_config.linear_solver_extended.max_iterations;
+    T lin_solver_tol_ex = params.solvers_config.linear_solver_extended.tolerance;
+    unsigned int use_precond_resid_ex = params.solvers_config.linear_solver_extended.use_precond_resid;
+    unsigned int resid_recalc_freq_ex = params.solvers_config.linear_solver_extended.resid_recalc_freq;
+    unsigned int basis_sz_ex = params.solvers_config.linear_solver_extended.basis_sz;    
+    //newton continuation control
+    unsigned int newton_cont_max_it = params.solvers_config.newton_method.max_iterations;
+    T newton_cont_tol = params.solvers_config.newton_method.tolerance;
+    //exended newton continuation control
+    unsigned int newton_cont_maximum_iterations =  params.solvers_config.newton_method_extended.max_iterations;
+    T newton_cont_update_wight_maximum = params.solvers_config.newton_method_extended.update_wight_maximum;
+    bool newton_cont_save_norms_history = params.solvers_config.newton_method_extended.save_norms_history;
+    bool newton_cont_verbose  = params.solvers_config.newton_method_extended.verbose;
+    T newton_cont_tolerance = params.solvers_config.newton_method_extended.tolerance;
+    T newton_cont_relax_tolerance_factor = params.solvers_config.newton_method_extended.relax_tolerance_factor;
+    unsigned int newton_cont_relax_tolerance_steps = params.solvers_config.newton_method_extended.relax_tolerance_steps;
+    unsigned int newton_stagnation_p_max = params.solvers_config.newton_method_extended.stagnation_p_max;
+    T newton_maximum_norm_increase = params.solvers_config.newton_method_extended.maximum_norm_increase;
+
 
 
     init_cuda(-1);
@@ -157,7 +221,8 @@ int main(int argc, char const *argv[])
     std::cout << "Using: Steps = " << steps << ", Rmin = " << R_min << ", Rmax = " << R_max << std::endl;
     std::cout << "    file name = " << file_name << ", alpha = " << alpha << ", R = " << R << std::endl;
     std::cout << "    Nx X Ny X Nz = " << Nx <<" X " << Ny << " X " << Nz << std::endl;
-    std::cout << "    high prec: " << (high_prec==1?"yes":"no") << ", direction: " << (direciton==1?"'+'":"'-'") << ", dS = " << (dS_0<T(0.0)?-1:dS_0) << std::endl;
+    std::cout << "    high prec: " << (high_prec==1?"yes":"no") << ", direction: " << (direction==1?"'+'":"'-'") << ", dS = " << (dS_0<T(0.0)?-1:dS_0) << std::endl;
+    std::cout << "    nz = " << nz << std::endl;
 
     //seting all vector operations and low level libraries
     cufft_type *CUFFT_C2R = new cufft_type(Nx, Ny, Nz);
@@ -176,38 +241,15 @@ int main(int argc, char const *argv[])
         vec_ops->use_high_precision();
     }
     gpu_file_operations_t *file_ops = new gpu_file_operations_t(vec_ops);
-    KF_3D_t *KF_3D = new KF_3D_t(alpha, Nx, Ny, Nz, vec_ops_R, vec_ops_C, vec_ops, CUFFT_C2R);    
+    KF_3D_t *KF_3D = new KF_3D_t(alpha, Nx, Ny, Nz, vec_ops_R, vec_ops_C, vec_ops, CUFFT_C2R, true, nz);    
     //monitor control
     monitor_t *mon;
     log_t log;
     log_t log3;
-    log3.set_verbosity(2);
+    log3.set_verbosity(0);
     lin_op_t lin_op(KF_3D);
     prec_t prec(KF_3D);      
 
-    //linsolver control
-    unsigned int lin_solver_max_it = 3000;
-    T lin_solver_tol = 5.0e-2;
-    unsigned int use_precond_resid = 1;
-    unsigned int resid_recalc_freq = 1;
-    unsigned int basis_sz = 3;
-    //newton continuation control
-    unsigned int newton_cont_max_it = 250;
-    T newton_cont_tol = 1.0e-9;
-    //extended linsolver control
-    unsigned int extended_lin_solver_max_it = 300;
-    T extended_lin_solver_tol = 5.0e-2;
-    unsigned int extended_use_precond_resid = 1;
-    unsigned int extended_resid_recalc_freq = 1;
-    unsigned int extended_basis_sz = 3;
-    //exended newton continuation control
-    unsigned int newton_cont_maximum_iterations =  15;
-    T newton_cont_update_wight_maximum = 1.0;
-    bool newton_cont_save_norms_history = true;
-    bool newton_cont_verbose  = true;
-    T newton_cont_tolerance = 1.0e-9;
-    T newton_cont_relax_tolerance_factor = 100.0;
-    unsigned int newton_cont_relax_tolerance_steps = 2;
 
     lin_solver_t lin_solver(vec_ops, &log3);
     lin_solver.set_preconditioner(&prec);
@@ -240,26 +282,24 @@ int main(int argc, char const *argv[])
     sherman_morrison_linear_system_solve_t SM(&prec, vec_ops, &log3);
     
     mon = &SM.get_linsolver_handle()->monitor();
-    mon->init(lin_solver_tol, T(0), lin_solver_max_it);
+    mon->init(lin_solver_tol, T(0), lin_solver_max_it_ex);
     mon->set_save_convergence_history(true);
     mon->set_divide_out_norms_by_rel_base(true);
-    SM.get_linsolver_handle()->set_use_precond_resid(use_precond_resid);
-    SM.get_linsolver_handle()->set_resid_recalc_freq(resid_recalc_freq);
-    SM.get_linsolver_handle()->set_basis_size(basis_sz);
+    SM.get_linsolver_handle()->set_use_precond_resid(use_precond_resid_ex);
+    SM.get_linsolver_handle()->set_resid_recalc_freq(resid_recalc_freq_ex);
+    SM.get_linsolver_handle()->set_basis_size(basis_sz_ex);
 
     container_helper_t container_helper(vec_ops);
     sol_storage_def_t solution_storage(vec_ops, 1, 1.0);
  
     int curve_number = 1;
-    std::string folder = "dat_files/";
-    unsigned int skip_output = 5;
     bif_diag_curve_t bif_diag(vec_ops, file_ops, &log, KF_3D, newton, curve_number, folder,  &container_helper, skip_output);
 
 
     continuate_t continuate(vec_ops, file_ops, (log_t*) &log, KF_3D, lin_op_p, &knots, &SM, newton);
 
-    continuate.set_newton(newton_cont_tolerance, newton_cont_maximum_iterations, newton_cont_relax_tolerance_factor, newton_cont_relax_tolerance_steps, newton_cont_update_wight_maximum, newton_cont_save_norms_history, newton_cont_verbose);
-    continuate.set_steps(steps, dS_0, dS_0*4.0, direciton, 0.05, 0.05, 5);
+    continuate.set_newton(newton_cont_tolerance, newton_cont_maximum_iterations, newton_cont_relax_tolerance_factor, newton_cont_relax_tolerance_steps, newton_cont_update_wight_maximum, newton_cont_save_norms_history, newton_cont_verbose, newton_stagnation_p_max, newton_maximum_norm_increase);
+    continuate.set_steps(steps, dS_0, dSmax, direction, dSdec_mult, dSinc_mult, 5);
 
     if (file_name!="none")
     {
