@@ -19,6 +19,7 @@ Examples of the nonlinear operators include:
 - (https://doi.org/10.3390/math11204336)
 - (https://doi.org/10.3390/math12213389)
 - (https://doi.org/10.14357/20790279240401)
+- (https://link.springer.com/book/9783031733741) [to appear]
 ### Supported by the RSF grant 23-21-00095:
 - (https://doi.org/10.1016/j.jcis.2024.08.040)
 
